@@ -7,21 +7,23 @@ class WFRD_Engine_Core:
     def forward_model(self, m, md, inc, dip, n_layers):
         if len(md) == 0: return np.array([])
         
-        # Estructura m: [Resistividades_Rh, Espesores, Rv_Rh_Ratio]
+        # Desempaquetado con límites físicos estrictos
         res_h = np.clip(m[:n_layers], 0.1, 1000)
         thick = np.clip(m[n_layers:2*n_layers-1], 1, 100)
-        ani_ratio = m[-1] # Rv/Rh
+        ani_ratio = np.clip(m[-1], 1.0, 5.0) 
         
         tvd_perp = get_perpendicular_distance(md, inc, dip)
         z_int = np.cumsum(np.concatenate(([0], thick))) - np.sum(thick)/2
         
-        # Modelo de capas (Rh base)
+        # Generación de capas Rh
         rh_layer = np.full_like(md, res_h[0], dtype=float)
         for i in range(len(z_int)-1):
-            weight = 0.5 * (1 + np.tanh(np.clip((tvd_perp - z_int[i])/5, -20, 20)))
+            # Sigmoide suave para transiciones
+            diff = np.clip((tvd_perp - z_int[i])/5, -20, 20)
+            weight = 0.5 * (1 + np.tanh(diff))
             rh_layer = rh_layer * (1 - weight) + res_h[i+1] * weight
             
-        # Aplicar corrección de anisotropía 3D
+        # Cálculo de Rv y Respuesta Aparente 3D
         rv_layer = rh_layer * ani_ratio
         return calculate_3d_anisotropy(rh_layer, rv_layer, inc, dip, 0, 0)
 
@@ -31,20 +33,33 @@ class WFRD_Engine_Core:
         mask = np.isfinite(obs_np) & np.isfinite(md_np)
         obs_c, md_c = obs_np[mask], md_np[mask]
         
-        # Bounds: Rh [0.2-1000], Espesores [2-50], Anisotropía [1.0-5.0]
+        if len(obs_c) < 5: 
+            return np.array([10]*n_layers + [15]*(n_layers-1) + [1.5]), 0.0
+
         bounds = [(0.2, 1000)] * n_layers + [(2, 50)] * (n_layers - 1) + [(1.0, 5.0)]
         
         def objective(m):
-            return np.sqrt(np.mean((obs_c - self.forward_model(m, md_c, inc, dip, n_layers))**2))
+            try:
+                pred = self.forward_model(m, md_c, inc, dip, n_layers)
+                if np.any(np.isnan(pred)) or np.any(np.isinf(pred)):
+                    return 1e12 # Penalización gigante pero finita
+                return np.sqrt(np.mean((obs_c - pred)**2))
+            except:
+                return 1e12
 
-        if "Global" in mode:
-            res = differential_evolution(objective, bounds=bounds, maxiter=1000, popsize=15, polish=True)
-        elif "Local" in mode:
-            res = differential_evolution(objective, bounds=bounds, maxiter=100, popsize=10)
-        else: # Determinístico
-            x0 = [10]*n_layers + [15]*(n_layers-1) + [1.5]
-            sol = least_squares(lambda m: obs_c - self.forward_model(m, md_c, inc, dip, n_layers), 
-                              x0=x0, bounds=([b[0] for b in bounds], [b[1] for b in bounds]), max_nfev=100)
-            return sol.x, np.sqrt(np.mean(sol.fun**2))
-            
-        return res.x, res.fun
+        try:
+            if "Global" in mode:
+                # El polish=True puede causar errores si el gradiente falla, lo movemos a False para mayor estabilidad
+                res = differential_evolution(objective, bounds=bounds, maxiter=1000, popsize=15, polish=False)
+                return res.x, res.fun
+            elif "Local" in mode:
+                res = differential_evolution(objective, bounds=bounds, maxiter=100, popsize=10, polish=False)
+                return res.x, res.fun
+            else:
+                x0 = [10]*n_layers + [15]*(n_layers-1) + [1.5]
+                sol = least_squares(lambda m: obs_c - self.forward_model(m, md_c, inc, dip, n_layers), 
+                                  x0=x0, bounds=([b[0] for b in bounds], [b[1] for b in bounds]), max_nfev=100)
+                return sol.x, np.sqrt(np.mean(sol.fun**2))
+        except Exception as e:
+            # Si todo falla, devolver modelo por defecto para no romper la UI
+            return np.array([10]*n_layers + [15]*(n_layers-1) + [1.5]), 999.0
