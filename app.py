@@ -2,95 +2,93 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from utils import clean_wfrd_data
 from engine_wfrd import WFRD_Engine_Core
 
-st.set_page_config(layout="wide", page_title="Earth Model Geosteer")
+st.set_page_config(layout="wide", page_title="Geo-Mapper Pro")
 
-# --- INTERFAZ Y SELECCIÓN DE PALETA ---
-st.sidebar.title("🌍 Modelo Tierra & Textura")
-color_theme = st.sidebar.selectbox("Paleta de Resistividad", ["Turbo", "Electric", "Viridis", "Hot"])
-n_layers = st.sidebar.slider("Capas del Modelo", 3, 9, 5)
-calc_mode = st.sidebar.radio("Motor de Inversión", ["Estocástico Global", "Determinístico"])
-user_dip = st.sidebar.slider("DIP (Buzamiento)", -15.0, 15.0, 0.0)
+# --- 1. TEMPLATE DE CURVAS (SELECTOR) ---
+st.sidebar.title("📋 Template de Log")
+with st.sidebar.expander("Seleccionar Canales"):
+    res_key = st.selectbox("Curva Principal (Inversión)", ["AD2_GW6", "AD4_GW6", "PD2_GW6", "PU1_GW6"])
+    q_keys = st.multiselect("Curvas Geodirección (Q)", ["QPD2", "QPD4", "QPU1", "QPU4"], default=["QPD2", "QPU1"])
+    color_theme = st.selectbox("Paleta de Tierra", ["Turbo", "Electric", "Hot", "Cividis"])
+
+# --- 2. CONTROLES DE SIMULACIÓN ---
+st.sidebar.title("🔭 Proyección & Dip")
+user_dip = st.sidebar.slider("DIP Formación", -15.0, 15.0, 0.0)
+proj_dist = st.sidebar.slider("Proyección adelante (ft)", 0, 200, 100)
+n_layers = st.sidebar.slider("Capas", 3, 7, 5)
 
 uploaded_file = st.file_uploader("Cargar TSV", type=["tsv"])
 
 if uploaded_file:
-    raw_df = pd.read_csv(uploaded_file, sep='\t')
-    raw_df.columns = [c.upper() for c in raw_df.columns]
-    df = clean_wfrd_data(raw_df)
+    df_raw = pd.read_csv(uploaded_file, sep='\t')
+    df_raw.columns = [c.upper() for c in df_raw.columns]
     
     engine = WFRD_Engine_Core()
-    last_inc = df['INC'].iloc[-1]
+    last_md = df_raw['MD'].iloc[-1]
+    last_inc = df_raw['INC'].iloc[-1]
     
     # Inversión
-    p, misfit = engine.solve(calc_mode, 100, df['AD2_GW6'].values, df['MD'].values, last_inc, user_dip, n_layers)
+    p, misfit = engine.solve("Estocástico", 50, df_raw[res_key].values, df_raw['MD'].values, last_inc, user_dip, n_layers)
     
+    # Geometría de capas
     res_vals = p[:n_layers]
     thick_vals = p[n_layers:2*n_layers-1]
     interfaces = np.cumsum(np.concatenate(([0], thick_vals))) - np.sum(thick_vals)/2
-    
-    # --- LÓGICA DE DTTB/DTBB DINÁMICA ---
-    # Posición actual del pozo (0 ft en el eje TVD relativo)
-    # Buscamos en qué capa está el 0 (nuestro pozo)
+
+    # --- LÓGICA DE MAPEO (DTB SIGUE LA CAPA) ---
+    # Calculamos la posición de la capa respecto a la broca (0,0)
     current_layer_idx = np.searchsorted(interfaces, 0) - 1
-    current_layer_idx = np.clip(current_layer_idx, 0, n_layers-1)
+    current_layer_idx = np.clip(current_layer_idx, 0, n_layers-2)
     
-    dttb = abs(interfaces[current_layer_idx])      # Distancia al límite superior
-    dtbb = abs(interfaces[current_layer_idx + 1])  # Distancia al límite inferior
+    # Proyección futura
+    f_md, f_path, f_layer = engine.predict_ahead(last_md, last_inc, user_dip, proj_dist)
 
-    # --- MÉTRICAS ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(f"DTTB (Capa {current_layer_idx+1})", f"{dttb:.1f} ft", delta="Superior")
-    c2.metric(f"DTBB (Capa {current_layer_idx+1})", f"{dtbb:.1f} ft", delta="Inferior")
-    c3.metric("Resistividad Local", f"{res_vals[current_layer_idx]:.1f} Ωm")
-    c4.metric("NBI", f"{last_inc - user_dip:.1f}°")
-
-    # --- CURTAIN SECTION CON TEXTURA ---
-    st.subheader("🌐 Sección de Cortina (Modelo de Tierra)")
-    tvd_grid = np.linspace(-60, 60, 200)
-    dip_offset = -(df['MD'].values - df['MD'].values[0]) * np.tan(np.radians(user_dip))
+    # --- VISUALIZACIÓN ---
+    st.subheader(f"🌐 Mapeo Proactivo: Capas siguiendo DIP {user_dip}°")
     
-    z_map = np.zeros((len(tvd_grid), len(df)))
-    for j in range(len(df)):
+    tvd_grid = np.linspace(-60, 60, 180)
+    md_total = np.concatenate([df_raw['MD'].values, f_md])
+    dip_offset = -(md_total - df_raw['MD'].iloc[0]) * np.tan(np.radians(user_dip))
+    
+    z_map = np.zeros((len(tvd_grid), len(md_total)))
+    for j in range(len(md_total)):
         curr_ints = interfaces + dip_offset[j]
         idx = np.searchsorted(curr_ints, tvd_grid)
         z_map[:, j] = res_vals[np.clip(idx, 0, n_layers-1)]
 
-    # Añadir "textura" (ruido gaussiano sutil para parecer roca)
-    texture = np.random.normal(0, 0.02, z_map.shape)
-    z_map_textured = np.log10(z_map) + texture
+    fig = go.Figure()
+    # Heatmap con textura
+    fig.add_trace(go.Heatmap(z=np.log10(z_map) + np.random.normal(0,0.01,z_map.shape), 
+                             x=md_total, y=tvd_grid, colorscale=color_theme, showscale=False))
 
-    fig_c = go.Figure()
-    fig_c.add_trace(go.Heatmap(
-        z=z_map_textured, x=df['MD'], y=tvd_grid, 
-        colorscale=color_theme, zsmooth='best', showscale=True
-    ))
-
-    # Dibujar TODAS las interfaces detectadas
-    for i, inter in enumerate(interfaces):
-        fig_c.add_trace(go.Scatter(
-            x=df['MD'], y=np.full(len(df), inter) + dip_offset,
-            mode='lines', line=dict(color='rgba(255,255,255,0.3)', width=1),
-            name=f"Límite {i}"
-        ))
-
-    # Pozo y Etiquetas de distancias en la broca
-    fig_c.add_trace(go.Scatter(x=df['MD'], y=np.zeros(len(df)), name="Wellbore", line=dict(color='white', width=3)))
+    # Trayectoria Real + Proyección (Línea Blanca)
+    full_path = np.concatenate([np.zeros(len(df_raw)), f_path])
+    fig.add_trace(go.Scatter(x=md_total, y=full_path, name="Trayectoria", line=dict(color='white', width=4)))
     
-    # Anotaciones dinámicas de DTTB/DTBB
-    fig_c.add_annotation(x=df['MD'].iloc[-1], y=interfaces[current_layer_idx], text=f"DTTB:{dttb:.1f}", showarrow=True, arrowhead=1)
-    fig_c.add_annotation(x=df['MD'].iloc[-1], y=interfaces[current_layer_idx+1], text=f"DTBB:{dtbb:.1f}", showarrow=True, arrowhead=1)
+    # Línea de puntos para la broca
+    fig.add_vline(x=last_md, line_dash="dash", line_color="rgba(255,255,255,0.5)")
 
-    fig_c.update_layout(height=650, template="plotly_dark", yaxis_title="TVD Relativo (ft)")
-    st.plotly_chart(fig_c, use_container_width=True)
+    # MAPEO DE DTBss (Las líneas de capa siguen el Dip)
+    for i, inter in enumerate(interfaces):
+        fig.add_trace(go.Scatter(x=md_total, y=np.full(len(md_total), inter) + dip_offset, 
+                                 mode='lines', line=dict(color='rgba(255,255,255,0.2)', width=1), showlegend=False))
 
-    # --- TRACKS DE GEODIRECCIÓN Q ---
-    st.subheader("📉 Registros GuideWave (Q)")
+    # Anotaciones DTB en la broca (Mapeo)
+    d_top = interfaces[current_layer_idx] + dip_offset[len(df_raw)-1]
+    d_base = interfaces[current_layer_idx+1] + dip_offset[len(df_raw)-1]
+    
+    fig.add_annotation(x=last_md, y=d_top, text=f"DTTB: {abs(d_top):.1f}ft", arrowhead=1, font=dict(color="cyan"))
+    fig.add_annotation(x=last_md, y=d_base, text=f"DTBB: {abs(d_base):.1f}ft", arrowhead=1, font=dict(color="yellow"))
+
+    fig.update_layout(height=600, template="plotly_dark", title="Mapeo de Formación con Proyección a 100ft")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Mostrar Curvas Q seleccionadas en el Template
+    st.markdown("### 📈 Respuesta de Geodirección (Canales Seleccionados)")
     fig_q = go.Figure()
-    for q in ['QPD2', 'QPD4', 'QPU1', 'QPU4']:
-        if q in df.columns: fig_q.add_trace(go.Scatter(x=df['MD'], y=df[q], name=q))
-    fig_q.update_layout(height=300, template="plotly_dark", xaxis_title="MD (ft)")
+    for q in q_keys:
+        if q in df_raw.columns: fig_q.add_trace(go.Scatter(x=df_raw['MD'], y=df_raw[q], name=q))
+    fig_q.update_layout(height=250, template="plotly_dark")
     st.plotly_chart(fig_q, use_container_width=True)
