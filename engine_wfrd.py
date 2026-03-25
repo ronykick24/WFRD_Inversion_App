@@ -3,29 +3,33 @@ from scipy.optimize import least_squares
 
 class StochasticInversion:
     def __init__(self):
-        self.range_50 = 50.0
+        self.max_reach = 50.0 # Alcance físico WFRD
 
-    def forward_model_anisotropic(self, params, inc_deg):
-        # m = [Rh, Rv, Distancia_Capa]
-        rh, rv, dist = params
-        theta = np.radians(inc_deg)
+    def simulate_layer_response(self, m, md_points, inc_deg):
+        """
+        m = [Rh_capa1, Rh_capa2, espesor_capa, tvd_contacto, anisotropy_ratio]
+        """
+        rh1, rh2, thickness, contact_tvd, alan = m
+        rv1 = rh1 * (alan**2)
         
-        # Coeficiente de Anisotropía Lambda
-        lam = np.sqrt(rv / rh)
+        # Proyectar MD a TVD para ver el cruce real a 85°
+        tvd_points = md_points * np.cos(np.radians(inc_deg))
         
-        # Respuesta corregida por inclinación (85 deg)
-        # A alto ángulo, la componente vertical domina la fase
-        res_eff = rh / np.sqrt(np.cos(theta)**2 + (1/lam**2) * np.sin(theta)**2)
+        # Calcular respuesta basada en la distancia al contacto
+        dist_to_contact = tvd_points - contact_tvd
         
-        # Atenuación geométrica hacia la capa a 50ft
-        return res_eff * np.exp(-dist / self.range_50)
+        # Modelo de transición suave (Física de la inducción)
+        # La herramienta empieza a "ver" la capa 50ft antes de tocarla
+        response = rh1 + (rh2 - rh1) * 0.5 * (1 + np.tanh(dist_to_contact / (self.max_reach / 2)))
+        
+        return response
 
-    def run(self, obs_value, inc_actual):
+    def run_stochastic_inversion(self, obs_data, md_points, inc_actual):
+        # Buscamos el mejor ajuste para espesor y resistividades
         def objective(p):
-            # p = [Rh, Rv, Distancia]
-            return self.forward_model_anisotropic(p, inc_actual) - obs_value
+            return self.simulate_layer_response(p, md_points, inc_actual) - obs_data
         
-        # Inversión con límites: Rh [0.1-2000], Rv [0.1-4000], Dist [0-50]
-        res = least_squares(objective, x0=[10, 20, 10], 
-                            bounds=([0.1, 0.1, 0], [2000, 4000, 50]))
+        # p0 = [Rh1, Rh2, Espesor, TVD_inicial, Anisotropia]
+        p0 = [2.0, 50.0, 15.0, 10.0, 1.5]
+        res = least_squares(objective, p0, bounds=([0.1, 0.1, 1, -100, 1], [1000, 1000, 200, 100, 5]))
         return res.x
