@@ -40,3 +40,18 @@ class WFRD_Engine_Core:
             res = least_squares(lambda m: np.log10(obs_np) - np.log10(self.forward_model(m, md_np, inc, dip, n_layers)), 
                                 x0=x0, bounds=([b[0] for b in bounds], [b[1] for b in bounds]), max_nfev=100)
         return res.x, 0.0
+from scipy.optimize import differential_evolution
+from physics_utils import calculate_3d_horns
+
+def proactive_stochastic_inversion(real_logs, md_array, inc_array, layer_model):
+    """Algoritmo Proactivo: Busca el mejor Shift/Dip automáticamente."""
+    def objective(params):
+        s_test, d_test = params
+        # Genera el modelo sintético 3D para comparar
+        synth = [calculate_3d_horns(layer_model['rh'], layer_model['rv'], inc_array[-1], d_test, s_test)]
+        # Error cuadrático logarítmico (Misfit 0-1)
+        return np.mean((np.log10(real_logs[-1]) - np.log10(synth))**2)
+
+    # El algoritmo 'evoluciona' hasta encontrar el mejor ajuste estructural
+    result = differential_evolution(objective, bounds=[(-60, 60), (-20, 20)])
+    return result.x  # Retorna [Best_Shift, Best_Dip]
