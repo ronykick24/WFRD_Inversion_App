@@ -3,7 +3,7 @@ from scipy.optimize import differential_evolution
 from physics_engine import calculate_forward_model
 
 def run_ahta_inversion(res_data, inc_data, layers, iterations=1000):
-    """Ajusta el modelo mediante evolución diferencial."""
+    """Inversión estocástica para resolver DIP y DTBss."""
     res_vals = np.array(res_data, dtype=float)
     inc_vals = np.array(inc_data, dtype=float)
     mask = ~np.isnan(res_vals)
@@ -20,4 +20,4 @@ def run_ahta_inversion(res_data, inc_data, layers, iterations=1000):
         return np.mean(errors)
 
     res = differential_evolution(objective, bounds=[(-65.0, 65.0), (-15.0, 15.0)], maxiter=iterations)
-    return res.x
+    return [float(x) for x in res.x] # Retornar como lista de floats nativos
