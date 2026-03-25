@@ -1,25 +1,19 @@
 import numpy as np
 
 def calculate_3d_anisotropy(rh, rv, inc, dip, azim, strike):
-    """
-    Calcula la resistividad aparente (Ra) considerando inclinación, 
-    dip, azimut del pozo y rumbo de la capa (Modelo 3D Relativo).
-    """
-    # Ángulo de ataque real en el espacio 3D
-    # Simplificado a 2D-Plane para este motor, pero preparado para Azimut
+    # Ángulo respecto al eje de la formación (Eje de Anisotropía)
     theta_res = np.radians(inc - dip) 
     
-    # Lambda es la raíz de la relación de anisotropía
-    lam = np.sqrt(rv / rh)
+    # Lambda (Anisotropía)
+    # Protegemos que rv no sea menor a rh para evitar lambdas < 1 indeseados
+    lam_sq = np.clip(rv / (rh + 1e-9), 1.0, 25.0)
     
-    # Ecuación de Ra para herramientas de propagación
-    ra = rh / np.sqrt(np.cos(theta_res)**2 + (lam**2) * np.sin(theta_res)**2)
+    # Ecuación de Ra: Evitamos división por cero con eps
+    denom = np.sqrt(np.cos(theta_res)**2 + lam_sq * np.sin(theta_res)**2)
+    ra = rh / (denom + 1e-12)
     return ra
 
 def get_perpendicular_distance(md, inc, dip):
-    """
-    Calcula el TVD perpendicular (TVD_perp) a la formación. 
-    Crucial para que el DTB sea geométricamente correcto.
-    """
+    # El ángulo de ataque real es respecto a la cara de la capa (90 + dip)
     alpha_rel = np.radians(inc - (90 + dip))
     return md * np.sin(alpha_rel)
