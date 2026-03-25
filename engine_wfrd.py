@@ -1,44 +1,44 @@
 import numpy as np
 from scipy.optimize import differential_evolution
 
-class StochasticInversion5L:
+class WFRD_Simulator:
     def __init__(self):
-        self.reach = 50.0
+        self.reach = 50.0  # Alcance máximo de la herramienta
 
-    def forward_model(self, m, md, inc, dip):
-        # m = [R1, R2, R3, R4, R5, espesor1, esp2, esp3, esp4, ani_ratio]
-        res = m[:5]
-        thick = m[5:9]
-        lam = m[9] # Anisotropía
+    def forward_model_2D(self, m, md, inc, dip):
+        """
+        m = [R_capas(5), Espesores(4), Anisotropia, Posicion_Contacto]
+        Simula la transición física de la onda a través de interfaces.
+        """
+        res_layers = m[:5]
+        thicknesses = m[5:9]
+        ani_ratio = m[9]
+        contact_z = m[10]
+
+        # Geometría: Ángulo de ataque relativo
+        alpha = np.radians(inc - dip)
         
-        # Geometría: Ángulo relativo entre pozo y formación
-        rel_angle = np.radians(inc - dip)
+        # TVD relativo proyectado
+        tvd_rel = (md * np.cos(alpha)) - contact_z
         
-        # TVD relativo (proyección vertical del pozo respecto a las capas)
-        tvd_pos = md * np.cos(rel_angle)
+        # Definición de las interfaces de las 5 capas
+        z_interfaces = np.cumsum(np.insert(thicknesses, 0, 0)) - np.sum(thicknesses)/2
         
-        # Definición de interfaces de las 5 capas
-        interfaces = np.cumsum(thick) - np.sum(thick)/2
-        
-        # Respuesta con corrección de anisotropía y transiciones suaves
-        # A 85°, la resistividad aparente se ve afectada por lam (Rv/Rh)
-        response = res[0]
-        for i in range(len(interfaces)):
-            # Función de transición sigmoide para simular la física de la herramienta
-            transition = 0.5 * (1 + np.tanh((tvd_pos - interfaces[i]) / 5.0))
-            response += (res[i+1] - res[i]) * transition
+        # Simulación de la respuesta (Mezcla de capas por sensibilidad volumétrica)
+        response = res_layers[0]
+        for i in range(len(z_interfaces)-1):
+            # Función sigmoide para representar la resolución vertical de la herramienta
+            weight = 0.5 * (1 + np.tanh((tvd_rel - z_interfaces[i]) / 4.0))
+            response = response * (1 - weight) + res_layers[i+1] * weight
             
-        return response * (1 + (lam - 1) * np.sin(rel_angle)**2)
+        return response
 
-    def run_inversion(self, obs_data, md_array, inc, dip_guess):
-        # Rangos: Res [0.1-1000], Espesores [2-25ft], Anisotropia [1-4]
-        bounds = [(0.1, 500)]*5 + [(5, 30)]*4 + [(1, 4)]
+    def solve(self, obs_data, md_array, inc):
+        # Buscamos: 5 Resistividades, 4 Espesores, 1 Anisotropía, 1 Dip
+        bounds = [(0.1, 1000)]*5 + [(2, 25)]*4 + [(1, 5)] + [(-10, 10)]
         
-        # Algoritmo Estocástico de Evolución Diferencial (Global)
         result = differential_evolution(
-            lambda m: np.sqrt(np.mean((obs_data - self.forward_model(m, md_array, inc, dip_guess))**2)),
-            bounds=bounds, 
-            popsize=10,
-            tol=0.01
+            lambda m: np.mean((obs_data - self.forward_model_2D(m[:-1], md_array, inc, m[-1]))**2),
+            bounds=bounds, popsize=15
         )
-        return result.x, result.fun
+        return result.x # Retorna el modelo de la formación y el Dip predicho
