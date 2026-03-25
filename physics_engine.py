@@ -28,3 +28,23 @@ def generate_azim_image(res_val, dttb, dtbb, n_bins=32):
     up_down_ratio = np.clip(dttb / (dtbb + 1e-3), 0.5, 2.0)
     image_row = res_val * (1 + 0.2 * np.cos(angles) * (1/up_down_ratio))
     return image_row
+import numpy as np
+
+def calculate_3d_horns(rh, rv, inc, dip, dist_to_bed):
+    """Genera los Cuernos de Polarización de Weatherford."""
+    alpha = np.radians(inc - dip)
+    lam = np.sqrt(rv / (rh + 1e-6))
+    # El efecto aumenta cuando estás cerca de la interfase (< 5 ft)
+    horn = 1.0 + (np.exp(-abs(dist_to_bed)/2.0) * (lam - 1))
+    return rh * horn
+
+def get_geo_metrics(md, inc, dip, shift, total_tst):
+    """Cálculo de TVDss, TST, TVT y DTBss."""
+    tvd = md * np.cos(np.radians(inc))
+    tvdss = tvd - 5000  # Ajustar según tu elevación real
+    tst = total_tst
+    tvt = tst / np.cos(np.radians(dip))
+    # DTBss (Distancia al tope/base ajustada por el Shift)
+    dtbss_top = shift 
+    dtbss_base = shift + tst
+    return tvdss, tst, tvt, dtbss_top, dtbss_base
