@@ -3,71 +3,77 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from utils import clean_wfrd_data
-from engine_wfrd import WFRD_Advanced_Engine
+from engine_wfrd import WFRD_Pro_Engine
 
-st.set_page_config(layout="wide", page_title="WFRD Geosteering AI")
+st.set_page_config(layout="wide", page_title="WFRD GuideWave Pro")
 
-# Paleta de Alto Contraste: Azul (Arcilla) -> Gris -> Amarillo (Aceite) -> Rojo (Gas)
-GEO_COLORS = [
-    [0.0, '#000080'], [0.2, '#87CEEB'], [0.4, '#FFFFFF'], 
-    [0.7, '#FFD700'], [1.0, '#8B0000']
-]
+# Paleta Geológica Pro
+GEO_COLORS = [[0, '#00008B'], [0.3, '#87CEEB'], [0.5, '#F0F0F0'], [0.8, '#FFD700'], [1, '#8B0000']]
 
-st.sidebar.title("🎮 Panel de Control")
-user_inc = st.sidebar.slider("Inclinación de Broca (°)", 75.0, 95.0, 85.0)
-user_dip = st.sidebar.slider("Buzamiento (Dip)", -10.0, 10.0, 0.0)
+# --- SIDEBAR INTERACTIVO ---
+st.sidebar.title("🛠️ Configuración Geosteering")
+n_layers = st.sidebar.select_slider("Cantidad de Capas", options=[2, 3, 4, 5], value=5)
+nbi_target = st.sidebar.slider("NBI Target (Proximidad)", 0.0, 1.0, 0.8)
+fixed_thick = st.sidebar.number_input("Espesor de Capa Base (ft)", 5.0, 50.0, 15.0)
+
+# Datos de Trayectoria (Labels en tiempo real)
+c_inc, c_azm, c_misfit = st.columns(3)
 
 uploaded_file = st.file_uploader("Cargar Registro TSV", type=["tsv"])
 
 if uploaded_file:
     df = clean_wfrd_data(pd.read_csv(uploaded_file, sep='\t'))
-    engine = WFRD_Advanced_Engine()
+    engine = WFRD_Pro_Engine()
     
-    with st.spinner('Simulando capas estocásticas...'):
-        p, misfit = engine.solve(df['AD2_GW6'].values, df['MD'].values, user_inc, user_dip)
+    # Inputs dinámicos
+    last_inc = df['INC'].iloc[-1]
+    last_azm = df['AZM'].iloc[-1] if 'AZM' in df.columns else 0.0
     
-    # --- EXTRACCIÓN DE INTERFACES ---
+    c_inc.metric("Última Inclinación", f"{last_inc:.2f}°")
+    c_azm.metric("Último Azimut", f"{last_azm:.2f}°")
+
+    user_dip = st.slider("Ajustar Buzamiento (Dip) de la Formación", -15.0, 15.0, 0.0)
+
+    # Inversión
+    with st.spinner('Sincronizando capas con Dip...'):
+        p, misfit = engine.solve(df['AD2_GW6'].values, df['MD'].values, last_inc, user_dip, n_layers)
+    
+    c_misfit.metric("Misfit (Validación)", f"{misfit:.4f}")
+
+    # --- TRACKS HORIZONTALES (RESISTIVIDAD Y GR) ---
+    fig_h = go.Figure()
+    fig_h.add_trace(go.Scatter(x=df['MD'], y=df['AD2_GW6'], name="Resistividad (33ft)", line=dict(color='red')))
+    fig_h.add_trace(go.Scatter(x=df['MD'], y=df['AU1_GW6'], name="Resistividad (50ft)", line=dict(color='orange')))
+    fig_h.update_layout(height=250, yaxis_type="log", title="Registros Horizontales", template="plotly_dark")
+    st.plotly_chart(fig_h, use_container_width=True)
+
+    # --- CURTAIN SECTION CON MOVIMIENTO DE DIP ---
+    # Creamos una malla TVD y aplicamos la rotación del Dip
+    tvd_grid = np.linspace(-60, 60, 120)
     thicknesses = p[5:9]
-    # Calculamos la posición vertical de las 4 interfaces entre las 5 capas
     interfaces = np.cumsum(np.concatenate(([0], thicknesses))) - np.sum(thicknesses)/2
     
-    # --- SECCIÓN DE CORTINA (CURTAIN SECTION) ---
-    tvd_grid = np.linspace(-60, 60, 200)
+    # El truco para que las capas se muevan: El centro de la capa cambia con el MD y el Dip
     z_map = np.zeros((len(tvd_grid), len(df)))
-    for i, z in enumerate(tvd_grid):
-        idx = np.searchsorted(interfaces, z)
-        z_map[i, :] = p[min(idx, 4)]
+    dip_offset = (df['MD'].values - df['MD'].values[0]) * np.tan(np.radians(user_dip))
+    
+    for j, md_val in enumerate(df['MD']):
+        current_interfaces = interfaces + dip_offset[j]
+        for i, z_val in enumerate(tvd_grid):
+            idx = np.searchsorted(current_interfaces, z_val)
+            z_map[i, j] = p[min(idx, 4)]
 
     fig_c = go.Figure()
-
-    # 1. El Shading (Mapa de Calor)
     fig_c.add_trace(go.Heatmap(
         z=np.log10(z_map), x=df['MD'], y=tvd_grid,
-        colorscale=GEO_COLORS, zsmooth='best', colorbar=dict(title="Log Res")
+        colorscale=GEO_COLORS, zsmooth='best'
     ))
 
-    # 2. Dibujar Líneas de Frontera (Interfaces)
-    for i, inter in enumerate(interfaces):
-        color = "white" if i in [1, 2] else "rgba(0,0,0,0.3)" # Resaltar Techo/Base del reservorio
-        fig_c.add_trace(go.Scatter(
-            x=df['MD'], y=np.full_like(df['MD'], inter),
-            mode='lines', line=dict(color=color, width=1, dash='dash'),
-            name=f"Interfaz {i+1}", showlegend=False
-        ))
-
-    # 3. Trayectoria y Etiquetas
-    well_y = (df['MD'].values - df['MD'].values[0]) * np.tan(np.radians(user_inc - 90 - user_dip))
-    fig_c.add_trace(go.Scatter(x=df['MD'], y=well_y, name="Trayectoria", line=dict(color='black', width=4)))
+    # Trayectoria del pozo (Línea central)
+    fig_c.add_trace(go.Scatter(x=df['MD'], y=np.zeros(len(df)), name="Trayectoria Pozo", line=dict(color='black', width=4)))
     
-    # Etiquetas de texto para claridad
-    fig_c.add_annotation(x=df['MD'].iloc[0], y=interfaces[1], text="TECHO (TOP)", font=dict(color="white"), showarrow=False)
-    fig_c.add_annotation(x=df['MD'].iloc[0], y=interfaces[2], text="BASE", font=dict(color="white"), showarrow=False)
-
-    fig_c.update_layout(height=650, title="Sección Estructural con Detalle de Capas (Reach 50ft)", 
+    fig_c.update_layout(height=600, title=f"Sección de Cortina con Dip de {user_dip}°", 
                         yaxis_title="TVD Relativo (ft)", template="plotly_white")
     st.plotly_chart(fig_c, use_container_width=True)
-
-    # Alerta de proximidad dinámica
-    dist_top = abs(well_y[-1] - interfaces[1])
-    if dist_top < 5:
-        st.error(f"⚠️ ¡CUIDADO! La broca está a {dist_top:.1f} ft del TECHO.")
+    
+    st.warning(f"Distancia estimada al techo del reservorio: {abs(interfaces[2]):.1f} ft (NBI: {nbi_target})")
