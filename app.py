@@ -2,59 +2,71 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from utils import clean_wfrd_data
 from engine_wfrd import WFRD_Engine_Core
 
-st.set_page_config(layout="wide", page_title="WFRD Geo-Pilot v2")
+st.set_page_config(layout="wide", page_title="WFRD Geo-Expert System")
 
-# --- SIDEBAR: CONFIGURACIÓN AVANZADA ---
-st.sidebar.title("🕹️ Control de Inversión")
-calc_mode = st.sidebar.radio("Método de Ajuste", ["Estocástico", "Determinístico"])
-n_layers = st.sidebar.selectbox("Modelo de Capas", [3, 4, 5], index=2)
-max_iters = st.sidebar.slider("Iteraciones Máximas", 10, 300, 100)
+# Colores consistentes para curvas
+CURVE_COLORS = {
+    'AD2_GW6': '#FF0000', 'AD4_GW6': '#FF4500', 'AU1_GW6': '#FF8C00',
+    'PD2_GW6': '#0000FF', 'PD4_GW6': '#1E90FF', 'PU1_GW6': '#87CEEB',
+    'QPD2': '#00FF00', 'QPU1': '#32CD32'
+}
 
-st.sidebar.markdown("---")
-st.sidebar.title("📊 Selección de Canales")
-canales = ['AD2_GW6', 'AD4_GW6', 'AU1_GW6', 'PD2_GW6', 'PU1_GW6']
-selec = st.sidebar.multiselect("Curvas a Visualizar", canales, default=['AD2_GW6', 'AU1_GW6'])
+st.sidebar.title("⚙️ Configuración")
+calc_mode = st.sidebar.selectbox("Método", ["Estocástico", "Determinístico"])
+n_layers = st.sidebar.slider("Capas", 3, 5, 5)
+iters = st.sidebar.slider("Iteraciones", 50, 500, 100)
 
-uploaded_file = st.file_uploader("Cargar Datos TSV", type=["tsv"])
+uploaded_file = st.file_uploader("Cargar TSV", type=["tsv"])
 
 if uploaded_file:
     df = clean_wfrd_data(pd.read_csv(uploaded_file, sep='\t'))
     engine = WFRD_Engine_Core()
     
-    # 1. Parámetros de Trayectoria Real
+    # Inputs de Geodirección
+    user_dip = st.sidebar.slider("Buzamiento (Dip)", -15.0, 15.0, 0.0)
     last_inc = df['INC'].iloc[-1]
-    last_azm = df['AZM'].iloc[-1] if 'AZM' in df.columns else 0.0
+    nbi_angle = last_inc - user_dip
     
-    # 2. Control interactivo de DIP para calcular NBI
-    user_dip = st.slider("Ajustar Buzamiento de Capa (Dip)", -15.0, 15.0, 0.0)
-    nbi_angle = last_inc - user_dip # El NBI es el ángulo relativo de corte
+    # Inversión
+    p, misfit = engine.solve(calc_mode, df['AD2_GW6'].values, df['MD'].values, last_inc, user_dip, n_layers, iters)
+
+    # --- TRACKS VERTICALES (LITOLOGÍA Y GEODIRECCIÓN) ---
+    st.subheader("📊 Registros de Perforación y Geodirección")
     
-    # 3. Ejecutar Inversión basada en la primera curva seleccionada
-    p, misfit = engine.solve(calc_mode, df[selec[0]].values, df['MD'].values, last_inc, user_dip, n_layers, max_iters)
+    fig_v = make_subplots(rows=1, cols=3, shared_yaxes=True, 
+                          subplot_titles=("Amplitud (dB)", "Fase (deg)", "Geodirección (Q)"))
+    
+    # Track 1: Amplitud
+    for c in ['AD2_GW6', 'AD4_GW6', 'AU1_GW6']:
+        if c in df.columns:
+            fig_v.add_trace(go.Scatter(x=df[c], y=df['MD'], name=c, line=dict(color=CURVE_COLORS[c])), row=1, col=1)
+    
+    # Track 2: Fase
+    for c in ['PD2_GW6', 'PD4_GW6', 'PU1_GW6']:
+        if c in df.columns:
+            fig_v.add_trace(go.Scatter(x=df[c], y=df['MD'], name=c, line=dict(color=CURVE_COLORS[c])), row=1, col=2)
 
-    # --- DASHBOARD DE MÉTRICAS ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("NBI (Relativo)", f"{nbi_angle:.1f}°")
-    c2.metric("Inclinación Real", f"{last_inc:.1f}°")
-    c3.metric("Azimut", f"{last_azm:.1f}°")
-    c4.metric("Misfit", f"{misfit:.4f}")
+    # Track 3: Geodirección
+    for c in ['QPD2', 'QPD4', 'QPU1']:
+        if c in df.columns:
+            fig_v.add_trace(go.Scatter(x=df[c], y=df['MD'], name=c, line=dict(width=2)), row=1, col=3)
 
-    # --- TRACKS HORIZONTALES INDIVIDUALES ---
-    fig_h = go.Figure()
-    for c in selec:
-        fig_h.add_trace(go.Scatter(x=df['MD'], y=df[c], name=c))
-    fig_h.update_layout(height=250, yaxis_type="log", title="Resistividades WFRD", template="plotly_dark")
-    st.plotly_chart(fig_h, use_container_width=True)
+    fig_v.update_yaxes(autorange="reversed", title="Profundidad (MD)")
+    fig_v.update_xaxes(type="log", col=1)
+    fig_v.update_layout(height=500, template="plotly_dark", showlegend=True)
+    st.plotly_chart(fig_v, use_container_width=True)
 
-    # --- SECCIÓN DE CORTINA DINÁMICA ---
+    # --- CURTAIN SECTION CON LOGICA DE DIP ---
+    st.subheader(f"🌐 Sección de Cortina (NBI: {nbi_angle:.1f}°)")
+    
     tvd_grid = np.linspace(-60, 60, 150)
     thicknesses = p[5:9]
     interfaces = np.cumsum(np.concatenate(([0], thicknesses))) - np.sum(thicknesses)/2
     
-    # Simulación de capas inclinadas por el DIP
     z_map = np.zeros((len(tvd_grid), len(df)))
     dip_offset = (df['MD'].values - df['MD'].values[0]) * np.tan(np.radians(user_dip))
     
@@ -66,12 +78,14 @@ if uploaded_file:
     fig_c = go.Figure()
     fig_c.add_trace(go.Heatmap(
         z=np.log10(z_map), x=df['MD'], y=tvd_grid,
-        colorscale='Geyser', zsmooth='best'
+        colorscale='Turbo', zsmooth='best', colorbar=dict(title="Res")
     ))
     
-    # Trayectoria del pozo (fija en 0 para ver el cruce relativo)
-    fig_c.add_trace(go.Scatter(x=df['MD'], y=np.zeros(len(df)), name="Wellbore", line=dict(color='black', width=4)))
-
-    fig_c.update_layout(height=550, title=f"Sección Estructural (NBI: {nbi_angle:.1f}°)", 
-                        yaxis_title="TVD Relativo (ft)", template="plotly_white")
+    # Trayectoria fija para ver movimiento relativo
+    fig_c.add_trace(go.Scatter(x=df['MD'], y=np.zeros(len(df)), name="Pozo", line=dict(color='white', width=3)))
+    
+    fig_c.update_layout(height=500, yaxis_title="TVD Relativo (ft)", xaxis_title="MD (ft)", template="plotly_dark")
     st.plotly_chart(fig_c, use_container_width=True)
+    
+    # Alertas de proximidad
+    st.info(f"NBI: {nbi_angle:.1f}° | Misfit: {misfit:.4f} | Anisotropía λ: {p[9]:.2f}")
