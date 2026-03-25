@@ -3,18 +3,29 @@ from scipy.optimize import least_squares
 
 class StochasticInversion:
     def __init__(self):
-        # Capacidades físicas de WFRD GuideWave
-        self.depth_investigation = {'33ft': 33.0, '40ft': 40.0, '50ft': 50.0}
+        self.range_50 = 50.0
 
-    def forward_model(self, m, dist_target):
-        res, dip = m
-        # Modelo físico mejorado para múltiples capas
-        return res * np.exp(-25.0 / dist_target) * np.cos(np.radians(dip))
-
-    def run(self, obs_value, dist_target=50.0):
-        def residual(m):
-            return self.forward_model(m, dist_target) - obs_value
+    def forward_model_anisotropic(self, params, inc_deg):
+        # m = [Rh, Rv, Distancia_Capa]
+        rh, rv, dist = params
+        theta = np.radians(inc_deg)
         
-        # Inversión Newtoniana con límites físicos
-        res = least_squares(residual, x0=[10.0, 0.0], bounds=([0.1, -90], [2000, 90]))
+        # Coeficiente de Anisotropía Lambda
+        lam = np.sqrt(rv / rh)
+        
+        # Respuesta corregida por inclinación (85 deg)
+        # A alto ángulo, la componente vertical domina la fase
+        res_eff = rh / np.sqrt(np.cos(theta)**2 + (1/lam**2) * np.sin(theta)**2)
+        
+        # Atenuación geométrica hacia la capa a 50ft
+        return res_eff * np.exp(-dist / self.range_50)
+
+    def run(self, obs_value, inc_actual):
+        def objective(p):
+            # p = [Rh, Rv, Distancia]
+            return self.forward_model_anisotropic(p, inc_actual) - obs_value
+        
+        # Inversión con límites: Rh [0.1-2000], Rv [0.1-4000], Dist [0-50]
+        res = least_squares(objective, x0=[10, 20, 10], 
+                            bounds=([0.1, 0.1, 0], [2000, 4000, 50]))
         return res.x
