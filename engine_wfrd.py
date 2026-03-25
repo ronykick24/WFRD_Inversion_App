@@ -1,54 +1,52 @@
 import numpy as np
-from scipy.optimize import differential_evolution
+from scipy.optimize import differential_evolution, least_squares
 
-class WFRD_Pro_Engine:
+class WFRD_Engine_Core:
     def __init__(self):
         self.reach = 50.0
 
-    def forward_model(self, m, md, inc, dip):
+    def forward_model(self, m, md, nbi_angle):
         # m = [R1..R5, Esp1..Esp4, Ani]
         res = m[:5]
         thick = m[5:9]
         ani = m[9]
         
-        # Ángulo de ataque relativo (Crucial para el cruce de capas)
-        alpha_rel = np.radians(inc - dip)
-        
-        # TVD proyectado: Cómo el pozo "ve" las capas según el Dip
+        # NBI: El ángulo relativo real de la herramienta respecto a la capa
+        alpha_rel = np.radians(nbi_angle)
         tvd_rel = md * np.sin(alpha_rel)
         
-        # Interfaces de capas (Capa 3 es el centro del reservorio)
         z_int = np.cumsum(np.concatenate(([0], thick))) - np.sum(thick)/2
         
         response = np.full_like(md, res[0], dtype=float)
         for i in range(len(z_int)-1):
-            # Transición física (Sensibilidad volumétrica de 50ft)
             weight = 0.5 * (1 + np.tanh((tvd_rel - z_int[i]) / 5.0))
             response = response * (1 - weight) + res[i+1] * weight
             
         return response * (1 + (ani - 1) * np.sin(alpha_rel)**2)
 
-    def solve(self, obs, md, inc, dip, n_layers):
-        # Ajustamos los límites según la cantidad de capas seleccionadas
-        num_res = n_layers
-        num_thick = n_layers - 1
-        bounds = [(0.1, 500)]*num_res + [(5, 30)]*num_thick + [(1, 4)]
+    def solve(self, mode, obs, md, inc, dip, n_layers, iters):
+        nbi_val = inc - dip
+        num_params = n_layers + (n_layers - 1) + 1 # Res + Esp + Ani
+        bounds = [(0.1, 500)]*n_layers + [(5, 30)]*(n_layers-1) + [(1, 4)]
         
-        result = differential_evolution(
-            lambda m: np.sqrt(np.mean((obs - self.forward_model(self.pad_params(m, n_layers), md, inc, dip))**2)),
-            bounds=bounds, popsize=10, tol=0.01
-        )
-        return self.pad_params(result.x, n_layers), result.fun
+        if mode == "Estocástico":
+            res = differential_evolution(
+                lambda m: np.sqrt(np.mean((obs - self.forward_model(self.pad(m, n_layers), md, nbi_val))**2)),
+                bounds=bounds, maxiter=iters, popsize=10
+            )
+            return self.pad(res.x, n_layers), res.fun
+        else:
+            # Determinístico: Más rápido pero requiere buen punto inicial
+            x0 = [10]*n_layers + [15]*(n_layers-1) + [1.5]
+            res = least_squares(
+                lambda m: obs - self.forward_model(self.pad(m, n_layers), md, nbi_val),
+                x0=x0, bounds=([b[0] for b in bounds], [b[1] for b in bounds]), max_nfev=iters
+            )
+            return self.pad(res.x, n_layers), np.mean(res.fun**2)
 
-    def pad_params(self, m, n):
-        """Asegura que siempre tengamos un vector de 10 elementos para el motor"""
-        res = np.zeros(5)
-        res[:n] = m[:n]
-        if n < 5: res[n:] = m[n-1] # Rellena con la última resistividad
-        
-        thick = np.zeros(4)
-        thick[:n-1] = m[n:2*n-1]
-        if n < 5: thick[n-1:] = 10 # Espesor default
-        
-        ani = m[-1]
-        return np.concatenate((res, thick, [ani], [0])) # El último es dummy dip
+    def pad(self, m, n):
+        res, thick = np.zeros(5), np.zeros(4)
+        res[:n], thick[:n-1] = m[:n], m[n:2*n-1]
+        if n < 5: 
+            res[n:], thick[n-1:] = m[n-1], 10
+        return np.concatenate((res, thick, [m[-1]]))
