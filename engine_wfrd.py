@@ -22,8 +22,10 @@ class WFRD_Engine_Core:
         return calculate_3d_anisotropy(rh_layer, rv_layer, inc, dip)
 
     def solve(self, mode, obs, md, inc, dip, n_layers):
-        obs_np = pd.to_numeric(obs, errors='coerce').fillna(10).values
-        md_np = pd.to_numeric(md, errors='coerce').fillna(0).values
+        # Aseguramos que los datos sean arrays de numpy y manejamos NaNs manualmente
+        obs_np = np.asarray(obs, dtype=float)
+        md_np = np.asarray(md, dtype=float)
+        obs_np = np.nan_to_num(obs_np, nan=10.0)
         
         bounds = [(0.2, 1000)] * n_layers + [(2, 50)] * (n_layers - 1) + [(1.0, 5.0)]
         
@@ -31,7 +33,8 @@ class WFRD_Engine_Core:
             try:
                 pred = self.forward_model(m, md_np, inc, dip, n_layers)
                 return np.sqrt(np.mean((obs_np - pred)**2))
-            except: return 1e12
+            except:
+                return 1e12
 
         if "Global" in mode:
             res = differential_evolution(objective, bounds=bounds, maxiter=1000, popsize=15, polish=False)
