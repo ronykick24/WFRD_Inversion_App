@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 from engine_wfrd import run_ahta_inversion
 from physics_engine import calculate_tst
 
-st.set_page_config(layout="wide", page_title="WFRD AHTA Dashboard")
+st.set_page_config(layout="wide", page_title="WFRD AHTA Pro")
 
 if 'shift' not in st.session_state: st.session_state.shift = 0.0
 if 'dip' not in st.session_state: st.session_state.dip = 0.0
@@ -35,8 +35,8 @@ with st.sidebar:
     
     if not df.empty and st.button("🚀 Ejecutar Inversión"):
         res_col = [c for c in df.columns if 'RAD' in c or 'RES' in c][0]
-        b_s, b_d = run_ahta_inversion(df[res_col].tail(40), df['INC'].tail(40), layers)
-        st.session_state.shift, st.session_state.dip = float(b_s), float(b_d)
+        results = run_ahta_inversion(df[res_col].tail(40), df['INC'].tail(40), layers)
+        st.session_state.shift, st.session_state.dip = results[0], results[1]
 
 c_main, c_bin = st.columns([0.7, 0.3])
 
@@ -60,11 +60,11 @@ with c_main:
                 cum += ly['tst']
             grid[j, i] = val
 
-    fig.add_trace(go.Heatmap(x=md, y=z_mesh, z=grid, colorscale='Cividis', showscale=False), row=2, col=1)
-    fig.add_trace(go.Scatter(x=md, y=np.zeros_like(md), name="Pozo", line=dict(color='lime', width=3)), row=2, col=1)
+    fig.add_trace(go.Heatmap(x=md.tolist(), y=z_mesh.tolist(), z=grid.tolist(), colorscale='Cividis', showscale=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=md.tolist(), y=np.zeros_like(md).tolist(), name="Pozo", line=dict(color='lime', width=3)), row=2, col=1)
     
     res_c = [c for c in df.columns if 'RAD' in c or 'RES' in c][0]
-    fig.add_trace(go.Scatter(x=md, y=df[res_c], name="Log", line=dict(color='white')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=md.tolist(), y=df[res_c].tolist(), name="Log", line=dict(color='white')), row=1, col=1)
     
     fig.update_layout(height=800, template="plotly_dark", showlegend=False)
     fig.update_yaxes(type="log", row=1, col=1)
@@ -74,13 +74,13 @@ with c_main:
 with c_bin:
     st.subheader("Bin Plot (16 Sectores)")
     
-    # SOLUCIÓN AL VALUEERROR:
-    # 1. Definir ángulos como lista de floats
-    # 2. Definir r como lista de floats
-    theta_list = [float(x) for x in np.linspace(0, 360, 16, endpoint=False)]
+    # --- FIX FINAL PARA EL VALUEERROR ---
+    # Generar 16 sectores exactos como lista de floats nativos
+    theta_list = [float(x) for x in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5]]
     
-    # Intensidad basada en DTBss (0° es el Highside del pozo)
-    val_base = np.exp(-abs(st.session_state.shift)/15.0)
+    # Intensidad: 0° es Highside (techo), 180° es Lowside (piso)
+    val_base = float(np.exp(-abs(st.session_state.shift)/15.0))
+    # Simulamos la respuesta azimutal según la cercanía a la frontera
     r_list = [float(val_base * abs(np.cos(np.radians(t)))) for t in theta_list]
     
     fig_polar = go.Figure()
@@ -88,19 +88,21 @@ with c_bin:
         r=r_list,
         theta=theta_list,
         marker_color=r_list,
-        colorscale='Viridis'
+        marker_colorscale='Viridis',
+        hoverinfo='none'
     ))
+    
     fig_polar.update_layout(
         template="plotly_dark", 
         height=400,
         polar=dict(
             radialaxis=dict(visible=False),
-            angularaxis=dict(direction="clockwise", rotation=90)
-        )
+            angularaxis=dict(direction="clockwise", rotation=90, tickvals=theta_list)
+        ),
+        showlegend=False
     )
     st.plotly_chart(fig_polar, use_container_width=True)
     
-    # Métricas Proactivas
     tst_actual = calculate_tst(layers[2]['tst'], st.session_state.dip)
     st.metric("DTBss (Boundary)", f"{st.session_state.shift:.2f} ft")
     st.metric("DIP Estructural", f"{st.session_state.dip:.2f} °")
