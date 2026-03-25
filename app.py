@@ -6,9 +6,9 @@ from plotly.subplots import make_subplots
 from engine_wfrd import run_ahta_inversion
 from physics_engine import calculate_tst
 
-st.set_page_config(layout="wide", page_title="WFRD Master Dashboard")
+st.set_page_config(layout="wide", page_title="WFRD Master Suite")
 
-# Gestión de Estado
+# Gestión de Estado Persistente
 if 'shift' not in st.session_state: st.session_state.shift = 0.0
 if 'dip' not in st.session_state: st.session_state.dip = 0.0
 
@@ -22,31 +22,31 @@ def load_data():
 
 df = load_data()
 
-# Modelo de capas WFRD (AHTA Standard)
+# Modelo de capas (AHTA Standard)
 layers = [
-    {"name": "Overburden", "tst": 20, "rh": 4, "rv": 8, "color": "#4b2c20"},
-    {"name": "Upper Seal", "tst": 12, "rh": 2, "rv": 4, "color": "#757575"},
-    {"name": "RESERVOIR", "tst": 35, "rh": 160, "rv": 240, "color": "#FFD700"},
-    {"name": "Basal/OWC", "tst": 45, "rh": 15, "rv": 25, "color": "#00008B"}
+    {"name": "Overburden", "tst": 20, "rh": 5, "rv": 10, "color": "#4b2c20"},
+    {"name": "Sello", "tst": 12, "rh": 2, "rv": 4, "color": "#757575"},
+    {"name": "RESERVOIR", "tst": 35, "rh": 180, "rv": 250, "color": "#FFD700"},
+    {"name": "Basal/OWC", "tst": 45, "rh": 12, "rv": 20, "color": "#00008B"}
 ]
 
-# --- SIDEBAR: CONTROLES ---
+# --- SIDEBAR: CONTROL DE NAVEGACIÓN ---
 with st.sidebar:
-    st.header("🎮 Geosteering Control")
+    st.header("⚙️ WFRD Navigation")
     st.session_state.dip = st.slider("DIP (°)", -15.0, 15.0, float(st.session_state.dip), 0.1)
     st.session_state.shift = st.slider("DTBss / Shift (ft)", -60.0, 60.0, float(st.session_state.shift), 0.5)
     
-    if not df.empty and st.button("🚀 Run Inversion (1000 iter)"):
+    if not df.empty and st.button("🚀 Inversión Estocástica"):
         res_col = [c for c in df.columns if 'RAD' in c or 'RES' in c][0]
-        # Inversión basada en los últimos datos (Look-ahead)
+        # Inversión proactiva en ventana móvil (últimos 40 puntos)
         b_s, b_d = run_ahta_inversion(df[res_col].tail(40), df['INC'].tail(40), layers)
-        st.session_state.shift, st.session_state.dip = b_s, b_d
+        st.session_state.shift, st.session_state.dip = float(b_s), float(b_d)
 
-# --- VISUALIZACIÓN PRINCIPAL ---
-col_plot, col_bin = st.columns([0.7, 0.3])
+# --- DASHBOARD DE GEONAVEGACIÓN ---
+col_main, col_aux = st.columns([0.7, 0.3])
 
-with col_plot:
-    st.subheader("Sección Estructural con Look-Ahead (200 ft)")
+with col_main:
+    st.subheader("Sección Estructural Proactiva (2D Curtain)")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.3, 0.7])
     
     md = df['MD'].values
@@ -54,49 +54,60 @@ with col_plot:
     grid = np.zeros((len(z_mesh), len(md)))
     dip_rad = np.radians(st.session_state.dip)
 
-    # Cálculo de la Cortina Estructural
+    # Lógica de Cortina Estructural Inclinada
     for i, x in enumerate(md):
         l_shift = st.session_state.shift + (x * np.tan(dip_rad))
         for j, z in enumerate(z_mesh):
             rel_z = z - l_shift
-            cum = 0
-            val = layers[-1]['rh']
+            cum, val = 0, layers[-1]['rh']
             for ly in layers:
                 if rel_z >= -cum - ly['tst'] and rel_z <= -cum:
-                    val = ly['rh']
-                    break
+                    val = ly['rh']; break
                 cum += ly['tst']
             grid[j, i] = val
 
-    # Renderizado de Heatmap y Wellbore
+    # Renderizado: Geología + Wellbore + Look-Ahead
     fig.add_trace(go.Heatmap(x=md, y=z_mesh, z=grid, colorscale='Cividis', showscale=False), row=2, col=1)
-    fig.add_trace(go.Scatter(x=md, y=np.zeros_like(md), name="Pozo", line=dict(color='lime', width=3)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=md, y=np.zeros_like(md), name="Trayectoria", line=dict(color='lime', width=3)), row=2, col=1)
     
-    # Proyección Look-Ahead 200ft
+    # Proyección Proactiva 200ft
     md_ahead = np.linspace(md[-1], md[-1]+200, 15)
     fig.add_trace(go.Scatter(x=md_ahead, y=np.zeros_like(md_ahead), name="Look-Ahead", line=dict(color='lime', dash='dash')), row=2, col=1)
 
-    # Track de Log de Resistividad
+    # Registro de Resistividad
     res_c = [c for c in df.columns if 'RAD' in c or 'RES' in c][0]
-    fig.add_trace(go.Scatter(x=md, y=df[res_c], name="Log Real", line=dict(color='white')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=md, y=df[res_c], name="Log", line=dict(color='white')), row=1, col=1)
     
     fig.update_layout(height=800, template="plotly_dark", showlegend=False)
     fig.update_yaxes(type="log", row=1, col=1)
     fig.update_yaxes(autorange="reversed", title="Vertical Offset (ft)", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
-with col_bin:
-    st.subheader("WFRD Bin Plot (16 Sectors)")
-    # Respuesta Azimutal Proactiva
-    theta = np.linspace(0, 360, 16, endpoint=False)
-    intensidad = [np.exp(-abs(st.session_state.shift)/15) * np.abs(np.cos(np.radians(t))) for t in theta]
+with col_aux:
+    st.subheader("Bin Plot (16 Sectores)")
+    # --- CORRECCIÓN DEL VALUEERROR ---
+    # Aseguramos que theta y r sean listas nativas de Python
+    theta_list = np.linspace(0, 360, 16, endpoint=False).tolist()
+    # Intensidad azimutal: Mayor cerca de la frontera detectada (AHTA)
+    r_list = [float(np.exp(-abs(st.session_state.shift)/15) * abs(np.cos(np.radians(t)))) for t in theta_list]
     
-    fig_polar = go.Figure(go.Barpolar(r=intensidad, theta=theta, marker_color=intensidad, colorscale='Viridis'))
-    fig_polar.update_layout(template="plotly_dark", height=400, polar=dict(radialaxis=dict(visible=False)))
+    fig_polar = go.Figure()
+    fig_polar.add_trace(go.Barpolar(
+        r=r_list,
+        theta=theta_list,
+        marker_color=r_list,
+        colorscale='Viridis',
+        hoverinfo='none'
+    ))
+    fig_polar.update_layout(
+        template="plotly_dark", 
+        height=400, 
+        polar=dict(radialaxis=dict(visible=False), angularaxis=dict(direction="clockwise", rotation=90))
+    )
     st.plotly_chart(fig_polar, use_container_width=True)
     
-    # Datos de Navegación
+    # Análisis de Geonavegación
     tst_actual = calculate_tst(layers[2]['tst'], st.session_state.dip)
-    st.info(f"**DTBss:** {st.session_state.shift:.2f} ft")
-    st.info(f"**DIP:** {st.session_state.dip:.2f} °")
-    st.success(f"**TST Reservorio:** {tst_actual:.1f} ft")
+    st.metric("DTBss (Boundary)", f"{st.session_state.shift:.2f} ft")
+    st.metric("DIP Estructural", f"{st.session_state.dip:.2f} °")
+    st.success(f"**TST de Arena:** {tst_actual:.1f} ft")
