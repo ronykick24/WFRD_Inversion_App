@@ -1,8 +1,8 @@
 def get_wfrd_palette():
-    """Paleta técnica para predecir contacto agua-aceite (OWC)."""
+    """Paleta técnica de alto relieve para contactos de fluidos."""
     return [
-        [0.0, "#000044"],   # Agua Profunda
-        [0.3, "#00C8FF"],   # Acuífero
-        [0.6, "#FFFF00"],   # Oil Leg (Amarillo Brillante)
-        [1.0, "#4b2c20"]    # Sello / Shale
+        [0.0, "#000033"], # Agua profunda
+        [0.3, "#0099FF"], # Contacto Agua-Aceite
+        [0.7, "#FFCC00"], # Zona de Pago (Oil)
+        [1.0, "#331a00"]  # Sello Superior
     ]
