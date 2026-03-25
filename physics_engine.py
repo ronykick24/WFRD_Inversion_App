@@ -1,21 +1,18 @@
 import numpy as np
 
-def calculate_3d_horns(rh, rv, inc, dip, dist_to_bed):
-    """Simula respuesta 3D (Anisotropía) de Weatherford."""
-    # Evitar división por cero y asegurar tipos float
-    try:
-        rh, rv, inc, dip, dist_to_bed = map(float, [rh, rv, inc, dip, dist_to_bed])
-        lam = np.sqrt(rv / (rh + 1e-6))
-        # Efecto de cuerno exponencial para simular aproximación al límite físico
-        horn_effect = 1.0 + (np.exp(-abs(dist_to_bed) / 3.5) * (lam - 1))
-        return rh * horn_effect
-    except:
-        return rh
-
-def get_geo_metrics(md, inc, dip, shift):
-    """Cálculos de TVDss y Métrica Estructural del límite."""
-    tvd = float(md) * np.cos(np.radians(float(inc)))
-    tvdss = tvd - 5000 # KB Elevación ejemplo
-    # El DTBss que sigue la estructura de la capa (Métrica Estructural)
-    dtbss_point = float(shift) + (float(md) * np.tan(np.radians(float(dip))))
-    return tvdss, dtbss_point
+def get_vertical_profile(shift, layers, z_range=100):
+    """Genera un perfil de resistividad vertical basado en el modelo de capas."""
+    z_coords = np.linspace(shift - z_range/2, shift + z_range/2, 100)
+    res_profile = []
+    
+    for z in z_coords:
+        # Lógica para determinar en qué capa cae cada punto Z
+        cumulative_z = shift
+        current_res = layers[-1]['rh']
+        for ly in layers:
+            if z <= cumulative_z and z > (cumulative_z - ly['tst']):
+                current_res = ly['rh']
+                break
+            cumulative_z -= ly['tst']
+        res_profile.append(current_res)
+    return z_coords, np.array(res_profile)
