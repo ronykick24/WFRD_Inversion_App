@@ -128,3 +128,14 @@ if uploaded_file:
         azim_rows = [generate_azim_image(r, dttb, dtbb) for r in res_array[-30:]]
         fig_img = go.Figure(data=go.Heatmap(z=np.array(azim_rows), colorscale="YlOrBr", showscale=False))
         fig_img.update_layout(height=450, margin=dict(l=10, r=10, t=30, b=10), title="Visualización 0-360°")
+        st.plotly_chart(fig_img, use_container_width=True)
+
+    # --- TABLA DE RESULTADOS DE INVERSIÓN ---
+    st.markdown("### 📊 Modelo de Capas y Límites de Formación")
+    res_df = pd.DataFrame({
+        "Capa": range(1, n_layers + 1),
+        "Rh (Horizontal)": [f"{r:.2f}" for r in res_h],
+        "Rv (Vertical)": [f"{r*ani:.2f}" for r in res_h],
+        "DTBss Relativo (ft)": [f"{z:.2f}" for z in interfaces] + ["Infinito"]
+    })
+    st.table(res_df)
