@@ -3,87 +3,78 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from utils import clean_wfrd_data
-from engine_wfrd import WFRD_Pro_Simulator
+from engine_wfrd import WFRD_Advanced_Engine
 
-st.set_page_config(layout="wide", page_title="WFRD Geosteering Dashboard")
+st.set_page_config(layout="wide", page_title="WFRD Geosteering AI")
 
-# Colores Geológicos con Shading Real (Agua-Aceite-Gas)
-GEO_COLORS = [
-    [0.0, 'rgb(0, 0, 139)'],    # Shale/Agua (Azul)
-    [0.2, 'rgb(173, 216, 230)'], # Silt/Transición
-    [0.4, 'rgb(240, 240, 240)'], # Caliza/Roca base
-    [0.7, 'rgb(255, 215, 0)'],   # Arena Petrolífera (Oro)
-    [1.0, 'rgb(139, 0, 0)']      # Gas/Alta Resistividad (Rojo)
+# Paleta Geológica Pro: Azul (Agua), Gris (Roca), Oro (Oil), Rojo (Gas)
+RESERVOIR_PALETTE = [
+    [0.0, 'rgb(0, 0, 100)'], [0.2, 'rgb(100, 200, 255)'], 
+    [0.5, 'rgb(255, 255, 255)'], [0.8, 'rgb(255, 215, 0)'], [1.0, 'rgb(150, 0, 0)']
 ]
 
-st.sidebar.title("🎮 Panel de Control Geosteering")
-inc_ctrl = st.sidebar.number_input("Inclinación de Broca (deg)", 0.0, 100.0, 85.0, step=0.1)
-dip_ctrl = st.sidebar.slider("Ajuste de Dip (Buzamiento)", -15.0, 15.0, 0.0)
-n_layers = st.sidebar.radio("Simulación de Capas", [3, 5], index=1)
+st.sidebar.title("🎮 Parámetros de Simulación")
+user_inc = st.sidebar.slider("Inclinación de la Broca (°)", 75.0, 95.0, 85.0)
+user_dip = st.sidebar.slider("Ajuste de Dip (Buzamiento)", -10.0, 10.0, 0.0)
+show_labels = st.sidebar.checkbox("Mostrar Etiquetas de Distancia", True)
 
-uploaded_file = st.file_uploader("Cargar Registro WFRD (.tsv)", type=["tsv"])
+uploaded_file = st.file_uploader("Subir Archivo TSV de Weatherford", type=["tsv"])
 
 if uploaded_file:
     df = clean_wfrd_data(pd.read_csv(uploaded_file, sep='\t'))
-    sim = WFRD_Pro_Simulator()
+    engine = WFRD_Advanced_Engine()
     
-    # Ejecutar Inversión con los parámetros del usuario
-    with st.spinner('Actualizando Inversión 2D...'):
-        p, misfit = sim.solve(df['AD2_GW6'].values, df['MD'].values, inc_ctrl, dip_ctrl)
+    with st.spinner('Procesando inversión estocástica...'):
+        p, misfit = engine.solve(df['AD2_GW6'].values, df['MD'].values, user_inc, user_dip)
     
-    # --- CÁLCULO DE PROXIMIDAD ---
-    # Interfaces reales en TVD
+    # --- CÁLCULO DE DISTANCIAS ---
     thicknesses = p[5:9]
     interfaces = np.cumsum(np.concatenate(([0], thicknesses))) - np.sum(thicknesses)/2
-    dist_to_top = abs(interfaces[2]) # Distancia al techo del reservorio (Capa 3)
-    
-    # --- ALERTAS Y MÉTRICAS ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Distancia al TECHO", f"{dist_to_top:.1f} ft")
-    c2.metric("Misfit", f"{misfit:.4f}")
-    
-    if dist_to_top < 5.0:
-        c3.error("⚠️ ALERTA: Proximidad al Techo (<5ft)")
+    dist_to_top = abs(interfaces[2]) # Ejemplo: Capa 3 es el Reservorio
+
+    # --- MÉTRICAS Y ALERTAS ---
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Misfit (Error)", f"{misfit:.4f}")
+    m2.metric("Distancia al Techo", f"{dist_to_top:.1f} ft")
+    if dist_to_top < 6.0:
+        m3.error("🚨 ALERTA: PROXIMIDAD AL TECHO")
     else:
-        c3.success("✅ Trayectoria Segura")
-    c4.metric("Resistividad Local", f"{p[2]:.1f} Ωm")
+        m3.success("🛡️ DENTRO DE PAY-ZONE")
 
-    # --- TRACKS HORIZONTALES (GR y RES) ---
-    fig_tracks = go.Figure()
-    # Simulación de Gamma Ray (GR) inverso a la resistividad
-    gr_sim = 120 - (np.log10(df['AD2_GW6']) * 30) 
-    fig_tracks.add_trace(go.Scatter(x=df['MD'], y=gr_sim, name="Gamma Ray", line=dict(color='green')))
-    fig_tracks.add_trace(go.Scatter(x=df['MD'], y=df['AD2_GW6'], name="Resistividad", yaxis="y2", line=dict(color='red')))
-    fig_tracks.update_layout(
-        height=250, margin=dict(t=10, b=10),
-        yaxis=dict(title="GR (API)", titlefont=dict(color="green")),
-        yaxis2=dict(title="Res (Ωm)", titlefont=dict(color="red"), overlaying="y", side="right", type="log"),
-        template="plotly_dark"
+    # --- TRACKS HORIZONTALES (GR + RES) ---
+    fig_t = go.Figure()
+    # Simulamos GR basado en litología de la inversión
+    gr_val = 150 - (np.log10(df['AD2_GW6']) * 40)
+    fig_t.add_trace(go.Scatter(x=df['MD'], y=gr_val, name="Gamma Ray", line=dict(color='green')))
+    fig_t.add_trace(go.Scatter(x=df['MD'], y=df['AD2_GW6'], name="Resistividad", yaxis="y2", line=dict(color='red')))
+    
+    fig_t.update_layout(
+        height=300, template="plotly_dark",
+        yaxis=dict(title="GR (API)", side="left"),
+        yaxis2=dict(title="Res (Ωm)", side="right", overlaying="y", type="log"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    st.plotly_chart(fig_tracks, use_container_width=True)
+    st.plotly_chart(fig_t, use_container_width=True)
 
-    # --- CURTAIN SECTION CON SHADING REAL ---
+    # --- CURTAIN SECTION (SHADING REAL) ---
     tvd_grid = np.linspace(-60, 60, 150)
     z_map = np.zeros((len(tvd_grid), len(df)))
     for i, z in enumerate(tvd_grid):
-        l_idx = np.searchsorted(interfaces, z)
-        z_map[i, :] = p[min(l_idx, 4)]
+        idx = np.searchsorted(interfaces, z)
+        z_map[i, :] = p[min(idx, 4)]
 
     fig_c = go.Figure()
-    # Fondo con degradado geológico
     fig_c.add_trace(go.Heatmap(
         z=np.log10(z_map), x=df['MD'], y=tvd_grid,
-        colorscale=GEO_COLORS, zsmooth='best', colorbar=dict(title="Log Res")
+        colorscale=RESERVOIR_PALETTE, zsmooth='best'
     ))
 
-    # Trayectoria dinámica cruzando capas
-    rel_angle = np.radians(inc_ctrl - 90 - dip_ctrl)
-    well_path = (df['MD'] - df['MD'].min()) * np.tan(rel_angle)
-    fig_c.add_trace(go.Scatter(x=df['MD'], y=well_path, name="Broca", line=dict(color='white', width=5)))
+    # Trayectoria dinámica
+    well_y = (df['MD'] - df['MD'].min()) * np.tan(np.radians(user_inc - 90 - user_dip))
+    fig_c.add_trace(go.Scatter(x=df['MD'], y=well_y, name="Trayectoria", line=dict(color='white', width=4)))
 
-    # Lables de Distancia en el gráfico
-    fig_c.add_annotation(x=df['MD'].iloc[-1], y=well_path[-1]+5, text=f"Top: {dist_to_top:.1f}ft", showarrow=False, font=dict(color="white"))
+    if show_labels:
+        fig_c.add_annotation(x=df['MD'].iloc[-1], y=well_y[-1], text="BROCA", showarrow=True, arrowhead=1)
 
-    fig_c.update_layout(height=550, title="Sección Estructural Interactiva (Visualización 50ft)", 
-                        yaxis=dict(title="TVD Relativo (ft)"), template="plotly_dark")
+    fig_c.update_layout(height=600, title="Simulación Estructural 50ft (1D/2D)", yaxis_title="TVD Relativo (ft)")
     st.plotly_chart(fig_c, use_container_width=True)
