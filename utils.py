@@ -1,21 +1,12 @@
 import pandas as pd
-import numpy as np
 
-def clean_wfrd_data(df):
-    # Eliminar la fila de unidades si existe
-    if str(df['MD'].iloc[0]).startswith('.'):
-        df = df.iloc[1:].copy()
-    
-    # Convertir todo a numérico, los textos se vuelven NaN
-    df = df.apply(pd.to_numeric, errors='coerce')
-    
-    # Reemplazar nulos de Weatherford
-    df = df.replace(-999.25, np.nan)
-    
-    # Eliminar filas donde MD sea nulo
-    df = df.dropna(subset=['MD'])
-    
-    # Rellenar huecos pequeños para que el algoritmo no salte
-    df = df.interpolate(method='linear', limit_area='inside')
-    
-    return df.reset_index(drop=True)
+def get_owc_palette():
+    """Paleta de Alto Relieve para Contacto Agua-Aceite."""
+    return [
+        [0.0, "#000032"], [0.3, "#00C8FF"], # Acuífero
+        [0.6, "#FFD700"], [1.0, "#4b2c20"]  # Reservorio / Sello
+    ]
+
+def save_geosteering_report(data):
+    """Crea un DataFrame listo para descargar."""
+    return pd.DataFrame([data])
