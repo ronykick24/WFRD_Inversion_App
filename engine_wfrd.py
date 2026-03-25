@@ -1,13 +1,12 @@
 import numpy as np
+import pandas as pd  # <--- IMPORTANTE: Faltaba esta línea
 from scipy.optimize import differential_evolution
 
 class WFRD_Engine_Core:
     def forward_model(self, m, md, inc, dip, n_layers):
         res, thick, ani = m[:n_layers], m[n_layers:2*n_layers-1], m[-1]
-        # Ángulo relativo: Inc (trayectoria) vs Dip (formación)
         alpha_rel = np.radians(inc - dip)
         tvd_rel = md * np.sin(alpha_rel)
-        
         z_int = np.cumsum(np.concatenate(([0], thick))) - np.sum(thick)/2
         
         response = np.full_like(md, res[0], dtype=float)
@@ -17,7 +16,7 @@ class WFRD_Engine_Core:
         return response * (1 + (ani - 1) * np.sin(alpha_rel)**2)
 
     def solve(self, iters, obs, md, inc, dip, n_layers):
-        # Asegurar que obs sea numérico y sin NaNs
+        # Limpieza de datos robusta
         obs = pd.to_numeric(obs, errors='coerce')
         mask = ~np.isnan(obs)
         obs_c, md_c = obs[mask], md[mask]
@@ -30,10 +29,11 @@ class WFRD_Engine_Core:
         )
         return res.x, res.fun
 
-    def predict_ahead(self, last_md, last_inc, future_inc, user_dip, dist=100):
-        f_md = np.linspace(last_md, last_md + dist, 30)
-        # Simulación de trayectoria con la inclinación proyectada
-        rel_path = (f_md - last_md) * np.cos(np.radians(future_inc)) # Cambio a TVD proyectado
-        # Mapeo de formación siguiendo el DIP
-        rel_layer = -(f_md - last_md) * np.tan(np.radians(user_dip))
-        return f_md, rel_path, rel_layer
+    def predict_exit(self, last_md, dttb, dtbb, future_inc, user_dip):
+        # Calcula a qué distancia (MD) ocurrirá el cruce de capa
+        angle_diff = np.radians(future_inc - user_dip - 90) # Ángulo relativo de ataque
+        if abs(angle_diff) < 0.001: return None, "Paralelo"
+        
+        # Distancia al límite más cercano según tendencia
+        dist_to_exit = dttb / np.sin(angle_diff) if future_inc > (90 + user_dip) else dtbb / np.sin(abs(angle_diff))
+        return last_md + abs(dist_to_exit), "Techo" if future_inc > (90 + user_dip) else "Base"
