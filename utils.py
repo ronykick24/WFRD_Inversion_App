@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def process_wfrd_data(df):
+def clean_wfrd_data(df):
     # 1. Eliminar la fila de unidades (fila 0 que contiene '.FT', '.deg', '.dB')
     if str(df['MD'].iloc[0]).startswith('.'):
         df = df.iloc[1:].copy()
