@@ -3,97 +3,82 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
-# Importación desde tus archivos de GitHub
 from engine_wfrd import run_proactive_inversion 
 from physics_engine import calculate_3d_horns, get_geo_metrics
-from utils import save_geosteering_report
+from utils import get_wfrd_palette
 
-st.set_page_config(layout="wide", page_title="WFRD Suite")
+st.set_page_config(layout="wide", page_title="WFRD Master Suite")
 
-# --- PERSISTENCIA ---
 if 'shift' not in st.session_state: st.session_state.shift = 0.0
 if 'dip' not in st.session_state: st.session_state.dip = 0.0
-if 'ghost' not in st.session_state: st.session_state.ghost = {"s": 0.0, "d": 0.0}
 
-# Carga de datos con limpieza profunda para evitar TypeError
 @st.cache_data
 def load_data():
     try:
         data = pd.read_csv("well_logs.tsv", sep='\t')
-        # FORZAR CONVERSIÓN NUMÉRICA: Evita que MD o INC se lean como objetos/strings
-        data['MD'] = pd.to_numeric(data['MD'], errors='coerce')
-        data['INC'] = pd.to_numeric(data['INC'], errors='coerce')
-        
-        # Identificar columnas de resistividad y convertirlas
-        res_cols = [c for c in data.columns if 'RAD' in c or 'RES' in c or 'GW6' in c]
-        for col in res_cols:
-            data[col] = pd.to_numeric(data[col], errors='coerce')
-            
-        return data.dropna(subset=['MD', 'INC'])
-    except Exception as e:
-        st.error(f"Error cargando archivo: {e}")
-        return pd.DataFrame()
+        for col in ['MD', 'INC']: data[col] = pd.to_numeric(data[col], errors='coerce')
+        return data.dropna(subset=['MD'])
+    except: return pd.DataFrame()
 
 df = load_data()
 
-# Modelo de Capas (Basado en imagen_4.png)
 layers = [
     {"name": "Overburden", "tst": 20, "rh": 20, "rv": 30, "color": "#4b2c20"},
-    {"name": "Upper Seal", "tst": 5, "rh": 2, "rv": 3, "color": "#757575"},
-    {"name": "TARGET RESERVOIR", "tst": 25, "rh": 100, "rv": 150, "color": "#FFD700"},
-    {"name": "Basal Sand (OWC)", "tst": 40, "rh": 50, "rv": 70, "color": "#00008B"}
+    {"name": "Upper Seal", "tst": 8, "rh": 2, "rv": 4, "color": "#757575"},
+    {"name": "TARGET RESERVOIR", "tst": 30, "rh": 120, "rv": 180, "color": "#FFD700"},
+    {"name": "Basal / OWC", "tst": 50, "rh": 40, "rv": 60, "color": "#00008B"}
 ]
 
-# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Geosteering Panel")
-    st.session_state.dip = st.slider("DIP (°)", -20.0, 20.0, st.session_state.dip)
-    st.session_state.shift = st.slider("Shift (ft)", -60.0, 60.0, st.session_state.shift)
+    st.header("🔍 WFRD Control Center")
+    st.session_state.dip = st.slider("DIP (°)", -15.0, 15.0, st.session_state.dip)
+    st.session_state.shift = st.slider("Shift (ft)", -50.0, 50.0, st.session_state.shift)
     
-    if not df.empty and st.button("🚀 Run Inversion"):
-        window = df.tail(15)
-        res_col = [c for c in df.columns if 'RAD' in c or 'RES' in c or 'GW6' in c][0]
-        
-        # Aseguramos que pasamos floats puros
-        best_s, best_d = run_proactive_inversion(
-            window[res_col].astype(float).values, 
-            window['INC'].astype(float).values, 
-            layers
-        )
-        st.session_state.shift, st.session_state.dip = float(best_s), float(best_d)
-    
-    st.button("💾 Save Ghost", on_click=lambda: st.session_state.update(ghost={"s": st.session_state.shift, "d": st.session_state.dip}))
+    if not df.empty and st.button("🚀 Inversión Estocástica"):
+        prog = st.progress(0, text="Iniciando...")
+        res_col = [c for c in df.columns if 'RAD' in c or 'RES' in c][0]
+        b_s, b_d = run_proactive_inversion(df[res_col].tail(20).values, df['INC'].tail(20).values, layers, prog)
+        st.session_state.shift, st.session_state.dip = float(b_s), float(b_d)
 
-# --- DASHBOARD ---
-st.title("WFRD Proactive Dashboard")
+st.title("Weatherford GuideWave Master Dashboard")
 
-if df.empty:
-    st.error("El archivo well_logs.tsv está vacío o no tiene el formato correcto.")
-else:
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.3, 0.7])
+if not df.empty:
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.3, 0.7])
     
-    # Logs Reales
-    res_col = [c for c in df.columns if 'RAD' in c or 'RES' in c or 'GW6' in c][0]
-    fig.add_trace(go.Scatter(x=df['MD'], y=df[res_col], name="Log Real", line=dict(color='white')), row=1, col=1)
+    # --- TRACK 1: LOGS (Real vs 3D vs 2D) ---
+    res_col = [c for c in df.columns if 'RAD' in c or 'RES' in c][0]
+    fig.add_trace(go.Scatter(x=df['MD'], y=df[res_col], name="Measured (Real)", line=dict(color='white')), row=1, col=1)
     
-    # Cortina Estructural - CÁLCULO SEGURO
-    # Convertimos a numpy array explícitamente para evitar problemas de tipos de Pandas
+    synth_3d = [calculate_3d_horns(layers[2]['rh'], layers[2]['rv'], inc, st.session_state.dip, st.session_state.shift) for inc in df['INC']]
+    fig.add_trace(go.Scatter(x=df['MD'], y=synth_3d, name="Synth 3D (Aniso)", line=dict(color='red', dash='dot')), row=1, col=1)
+    
+    # --- TRACK 2: CORTINA + LOOK AHEAD ---
     md_array = df['MD'].values
-    dip_rad = np.radians(float(st.session_state.dip))
-    y_base = -5160.0 + float(st.session_state.shift)
+    y_base = -5160.0 + st.session_state.shift
     
-    for ly in layers:
-        # La operación matemática ahora es entre arrays de numpy y floats puros
-        y_layer = y_base + (md_array * np.tan(dip_rad))
+    # Dibujar Capas con Paleta OWC
+    for i, ly in enumerate(layers):
+        y_layer = y_base + (md_array * np.tan(np.radians(st.session_state.dip)))
         fig.add_trace(go.Scatter(x=md_array, y=y_layer, fill='toself', fillcolor=ly['color'], line_width=0, name=ly['name']), row=2, col=1)
-        y_base -= float(ly['tst'])
+        
+        # LOOK AHEAD 200FT: Proyección de capas hacia adelante
+        md_ahead = np.linspace(md_array[-1], md_array[-1] + 200, 10)
+        y_ahead = y_layer[-1] + ((md_ahead - md_array[-1]) * np.tan(np.radians(st.session_state.dip)))
+        fig.add_trace(go.Scatter(x=md_ahead, y=y_ahead, line=dict(color=ly['color'], dash='dash'), showlegend=False), row=2, col=1)
+        
+        y_base -= ly['tst']
 
-    fig.update_layout(height=800, template="plotly_dark", showlegend=False)
+    # Trayectoria del Pozo (Referencia)
+    fig.add_trace(go.Scatter(x=md_array, y=np.full_like(md_array, -5160), name="Wellbore", line=dict(color='lime', width=2)), row=2, col=1)
+
+    fig.update_layout(height=900, template="plotly_dark", showlegend=True, coloraxis={'colorscale': get_wfrd_palette()})
     fig.update_yaxes(type="log", row=1, col=1)
     fig.update_yaxes(autorange="reversed", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Métricas
-    tvdss, tvt, dtb = get_geo_metrics(float(md_array[-1]), float(df['INC'].iloc[-1]), float(st.session_state.dip), float(st.session_state.shift), 25)
-    st.metric("DTBss (Techo)", f"{abs(dtb):.1f} ft")
+    # MÉTRICAS: DTBss como punto estructural
+    tvdss, dtbss_point = get_geo_metrics(md_array[-1], df['INC'].iloc[-1], st.session_state.dip, st.session_state.shift, 30)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("DTBss (Límite Estructural)", f"{dtbss_point:.1f} ft")
+    c2.metric("Buzamiento Actual", f"{st.session_state.dip}°")
+    c3.metric("TVDss @ Bit", f"{tvdss:.1f} ft")
