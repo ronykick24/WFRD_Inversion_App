@@ -8,7 +8,6 @@ def run_proactive_inversion(measured_res_array, md_array, inc_array, layers):
         s_test, d_test = params
         rh, rv = layers[2]['rh'], layers[2]['rv'] # Capa Reservorio
         
-        # Misfit promediado sobre los últimos puntos de datos
         misfit_points = []
         for i in range(len(measured_res_array)):
             synth = calculate_3d_horns(rh, rv, inc_array[i], d_test, s_test)
@@ -17,4 +16,4 @@ def run_proactive_inversion(measured_res_array, md_array, inc_array, layers):
         return np.mean(misfit_points)
 
     result = differential_evolution(objective, bounds=[(-60, 60), (-15, 15)])
-    return result.x # Retorna [Best_Shift, Best_Dip]
+    return result.x
