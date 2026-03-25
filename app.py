@@ -121,3 +121,30 @@ with col_res2:
 report_notes = st.text_area("Notas del Geólogo para el Reporte de Guardia:", "Ajuste de +5ft realizado por cambio de tendencia en 100KHz...")
 if st.button("💾 Exportar Reporte Final"):
     st.success("Reporte Guardado con éxito.")
+import streamlit as st
+from engine import proactive_stochastic_inversion
+from physics_utils import get_geo_metrics
+
+# 1. SIDEBAR: Mantén tus Sliders de DIP y Shift, pero agrega el botón 'Proactive'
+if st.sidebar.button("🚀 Ejecutar Inversión Estocástica"):
+    best_s, best_d = proactive_stochastic_inversion(data, md, inc, model)
+    st.session_state.shift = best_s
+    st.session_state.dip = best_d
+
+# 2. TABS PRINCIPALES (Aquí apilas todo lo que pediste)
+tab1, tab2, tab3 = st.tabs(["🌎 Cortina & Ahead 200ft", "📊 Logs & 3D", "📝 Reporte & Ingeniería"])
+
+with tab1:
+    # CORTINA: Agrega la Paleta OWC (Azules) y el Ghost Plot (Línea blanca punteada)
+    # PROYECCIÓN: Dibuja la línea verde punteada para los próximos 200ft de MD
+    st.subheader("Visualización Geológica Proactive (50ft Reach)")
+    
+with tab2:
+    # LOGS: Muestra el Match de Resistividad con los Cuernos de Polarización
+    # IMAGEN AZIMUTAL: Heatmap 360°
+    st.subheader("Análisis de Herramienta WFRD 3D")
+
+with tab3:
+    # INGENIERÍA: Muestra los resultados de get_geo_metrics (TVDss, TST, TVT)
+    # ALERTAS: Si DTBss < 3ft, muestra st.error("¡Salida por el Techo!")
+    st.subheader("Cálculos de Espesor y Reporte de Guardia")
