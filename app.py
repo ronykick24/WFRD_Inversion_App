@@ -1,150 +1,88 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from scipy.optimize import differential_evolution
+from plotly.subplots import make_subplots
 
-# --- CONFIGURACIÓN ESTRUCTURAL ---
-st.set_page_config(layout="wide", page_title="WFRD Ultra-Suite v47")
+# Importación de tus módulos locales
+from physics_engine import calculate_3d_horns, get_geo_metrics
+from engine import run_proactive_inversion
+from utils import get_owc_palette, save_geosteering_report
 
-# --- 1. MOTOR DE CÁLCULO MULTI-VARIABLE (TVT, TST, TVDss, DTBss) ---
-def calculate_geosteering_metrics(shift, dip, inc, md, layers_tst):
-    tvd = md * np.cos(np.radians(inc))
-    tvd_ss = tvd - 5000 # Elevación KB (Ejemplo)
-    # TST (True Stratigraphic Thickness) vs TVT (True Vertical Thickness)
-    tst_total = sum(layers_tst)
-    tvt_total = tst_total / np.cos(np.radians(dip))
-    
-    # DTBss (Distance to Bed - Subsea)
-    dtb_top = shift - (tvd_ss % 50) # Lógica simplificada de posición relativa
-    dtb_base = dtb_top + tst_total
-    return tvd, tvd_ss, tst_total, tvt_total, dtb_top, dtb_base
+st.set_page_config(layout="wide", page_title="WFRD GuideWave Suite")
 
-# --- 2. BARRA LATERAL: PANEL DE CONTROL TOTAL ---
+# --- PERSISTENCIA (No se borra al mover sliders) ---
+if 'shift' not in st.session_state: st.session_state.shift = 0.0
+if 'dip' not in st.session_state: st.session_state.dip = 0.0
+if 'ghost' not in st.session_state: st.session_state.ghost = {"s": 0.0, "d": 0.0}
+
+# --- MODELO DE CAPAS (Basado en imagen_4.png) ---
+layers = [
+    {"name": "Overburden", "tst": 20, "rh": 20, "rv": 30, "color": "#4b2c20"},
+    {"name": "Upper Seal", "tst": 5, "rh": 2, "rv": 3, "color": "#757575"},
+    {"name": "TARGET RESERVOIR", "tst": 25, "rh": 100, "rv": 150, "color": "#FFD700"},
+    {"name": "Basal Sand (OWC)", "tst": 40, "rh": 50, "rv": 70, "color": "#00008B"}
+]
+
+# --- SIDEBAR: CONTROLES DE INGENIERÍA ---
 with st.sidebar:
-    st.header("🛠️ Configuración de Inversión")
+    st.header("⚙️ WFRD Controls")
+    st.session_state.dip = st.slider("DIP (°)", -20.0, 20.0, st.session_state.dip)
+    st.session_state.shift = st.slider("Shift (ft)", -60.0, 60.0, st.session_state.shift)
     
-    # MODO DE INVERSIÓN
-    inv_mode = st.radio("Algoritmo", ["Estocástico (Proactivo)", "Determinístico (Ajuste)", "Manual Interactive"])
-    physics_dim = st.radio("Física", ["2D Isotrópica", "3D Anisótropa (Rh/Rv)"])
-    is_3d = "3D" in physics_dim
+    if st.button("🚀 Ejecutar Inversión Estocástica"):
+        b_s, b_d = run_proactive_inversion(105.0, 89.5, layers)
+        st.session_state.shift, st.session_state.dip = b_s, b_d
     
-    st.divider()
-    
-    # SELECCIÓN DE CAPA OBJETIVO Y ALERTAS
-    target_layer = st.selectbox("Capa Objetivo (Target)", ["Capa 1", "Capa 2", "Capa 3", "Capa 4"])
-    st.warning("⚠️ ALERTA: Salida por Techo" if abs(st.session_state.get('shift',0)) > 20 else "✅ Trayectoria en Target")
+    if st.button("💾 Fijar Ghost (Sombra)"):
+        st.session_state.ghost = {"s": st.session_state.shift, "d": st.session_state.dip}
 
-    st.divider()
-    
-    # CONTROLES DE CAPAS Y RESISTIVIDAD
-    st.subheader("📊 Propiedades de Formación")
-    l_res = [st.number_input(f"Res L{i+1}", 0.1, 1000.0, 10.0) for i in range(4)]
-    l_tst = [st.number_input(f"TST L{i+1}", 1.0, 100.0, 15.0) for i in range(4)]
-    
-    st.divider()
-    
-    # AJUSTES INTERACTIVOS (DIP / SHIFT / GHOST)
-    st.subheader("📐 Geometría")
-    dip = st.slider("DIP (°)", -30.0, 30.0, 0.0)
-    shift = st.slider("Shift (ft)", -100.0, 100.0, 0.0)
-    if st.button("Ghost Save"): st.session_state.ghost = {'s': shift, 'd': dip}
+# --- TRACKS APILADOS (VISUALIZACIÓN TÉCNICA) ---
+st.title("Weatherford Proactive Geosteering Master Dashboard")
+md = np.linspace(1500, 3500, 100)
 
-# --- 3. DASHBOARD DE VISUALIZACIÓN (3 TRACKS + CORTINA + 3D) ---
-st.title("WFRD GuideWave Engineering Suite v47")
+fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+                    row_heights=[0.2, 0.2, 0.6],
+                    subplot_titles=("Resistivity Logs (GW6)", "Misfit QC", "Curtain Plot & Ahead 200ft"))
 
-t1, t2, t3 = st.tabs(["🗺️ Cortina & Proyección 200ft", "📈 Inversión & Logs", "🧊 Vista 3D & Azimutal"])
+# TRACK 1: Logs con Cuernos de Polarización
+fig.add_trace(go.Scatter(x=md, y=np.random.lognormal(2, 0.1, 100), name="Real"), row=1, col=1)
+fig.add_trace(go.Scatter(x=md, y=np.random.lognormal(2, 0.05, 100), name="Synth 3D", line=dict(color='red', dash='dot')), row=1, col=1)
 
-with t1:
-    # CORTINA CON PROYECCIÓN AHEAD 200 FT
-    fig_curtain = go.Figure()
-    md_real = np.linspace(0, 1000, 100)
-    md_ahead = np.linspace(1000, 1200, 20) # Proyección 200ft
-    
-    # Paleta OWC / Tierra de Alto Relieve
-    palette = [[0, "navy"], [0.2, "cyan"], [0.5, "gold"], [1, "maroon"]]
-    
-    # Capas con Ghost Plot
-    for i in range(4):
-        y_pos = (i*20 - 40) + shift + (md_real * np.tan(np.radians(dip)))
-        fig_curtain.add_trace(go.Scatter(x=md_real, y=y_pos, name=f"L{i+1}", fill='tonexty'))
-    
-    # Trayectoria Ahead (Proactiva)
-    y_ahead = (md_ahead - 1000) * np.sin(np.radians(5)) # Simulando tendencia
-    fig_curtain.add_trace(go.Scatter(x=md_ahead, y=y_ahead, name="Ahead 200ft", line=dict(dash='dash', color='lime')))
-    
-    fig_curtain.update_layout(height=500, template="plotly_dark", yaxis=dict(range=[100, -100]))
-    st.plotly_chart(fig_curtain, use_container_width=True)
+# TRACK 3: Cortina Geológica + Ghost + Proyección
+y_base = -5160 + st.session_state.shift
+for ly in layers:
+    y_layer = y_base + (md * np.tan(np.radians(st.session_state.dip)))
+    fig.add_trace(go.Scatter(x=md, y=y_layer, name=ly['name'], fill='toself', fillcolor=ly['color'], line_width=0), row=3, col=1)
+    # Etiqueta de resistividad (como en tu imagen)
+    fig.add_annotation(x=3550, y=y_layer[-1], text=f"{ly['rh']} ohm", showarrow=False, row=3, col=1)
+    y_base -= ly['tst']
 
-with t2:
-    # TRACKS HORIZONTALES SELECCIONABLES
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Resistividad Multicanal")
-        # Aquí se modelan los "Cuernos de Polarización" si is_3d es True
-        fig_res = go.Figure()
-        fig_res.add_trace(go.Scatter(x=np.random.rand(100), y=md_real, name="Measured"))
-        if is_3d: fig_res.add_trace(go.Scatter(x=np.random.rand(100)*1.5, y=md_real, name="3D Aniso (Rh/Rv)", line=dict(color='red')))
-        fig_res.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_res, use_container_width=True)
-    with c2:
-        st.subheader("Misfit Estocástico Proactivo")
-        # Gráfica de confianza del algoritmo
-        st.line_chart(np.random.rand(20))
+# Línea Ghost (Sombra del ajuste anterior)
+ghost_y = -5160 + st.session_state.ghost['s'] + (md * np.tan(np.radians(st.session_state.ghost['d'])))
+fig.add_trace(go.Scatter(x=md, y=ghost_y, name="Ghost", line=dict(color='rgba(255,255,255,0.4)', dash='dot')), row=3, col=1)
 
-with t3:
-    # VISTA 3D Y AZIMUTAL
-    st.subheader("Imagen Azimutal 360° (GuideWave)")
-    # Modelado de efectos físicos: Prof de investigación y cuernos
-    azi_data = np.random.rand(50, 36) # 36 sectores
-    fig_azi = go.Figure(data=go.Heatmap(z=azi_data, colorscale='Viridis'))
-    st.plotly_chart(fig_azi, use_container_width=True)
-    
-    # VISTA 3D DE TRAYECTORIA
-    fig_3d = go.Figure(data=[go.Scatter3d(x=md_real, y=np.sin(md_real/100)*10, z=-md_real/10, mode='lines')])
-    st.plotly_chart(fig_3d, use_container_width=True)
+# Proyección Ahead 200ft (Verde punteada)
+md_ahead = np.linspace(3500, 3700, 10)
+fig.add_trace(go.Scatter(x=md_ahead, y=np.full(10, -5160), name="Ahead", line=dict(color='lime', dash='dash', width=3)), row=3, col=1)
 
-# --- 4. PANEL DE REPORTES EDITABLE ---
-st.divider()
-st.header("📋 Reporte de Ingeniería (Editable)")
-col_res1, col_res2 = st.columns(2)
-tvd, tvdss, tst, tvt, dtb_t, dtb_b = calculate_geosteering_metrics(shift, dip, 90, 1000, l_tst)
+fig.update_layout(height=850, template="plotly_dark", showlegend=False)
+fig.update_yaxes(type="log", row=1, col=1)
+fig.update_yaxes(autorange="reversed", row=3, col=1)
+st.plotly_chart(fig, use_container_width=True)
 
-with col_res1:
-    st.write(f"**TVDss:** {tvdss:.2f} ft")
-    st.write(f"**TST Total:** {tst:.2f} ft")
-    st.write(f"**TVT Total:** {tvt:.2f} ft")
-with col_res2:
-    st.write(f"**DTBss al Tope:** {dtb_t:.2f} ft")
-    st.write(f"**DTBss a la Base:** {dtb_b:.2f} ft")
+# --- PANEL DE MÉTRICAS Y REPORTES ---
+tvdss, tvt, dtb_t, dtb_b = get_geo_metrics(3500, 89.5, st.session_state.dip, st.session_state.shift, 25)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("TVDss", f"{tvdss:.1f} ft")
+c2.metric("TVT Total", f"{tvt:.1f} ft")
+c3.metric("DTBss (Techo)", f"{abs(dtb_t):.1f} ft")
+c4.metric("DIP Invertido", f"{st.session_state.dip}°")
 
-report_notes = st.text_area("Notas del Geólogo para el Reporte de Guardia:", "Ajuste de +5ft realizado por cambio de tendencia en 100KHz...")
-if st.button("💾 Exportar Reporte Final"):
-    st.success("Reporte Guardado con éxito.")
-import streamlit as st
-from engine import proactive_stochastic_inversion
-from physics_utils import get_geo_metrics
+if abs(dtb_t) < 5:
+    st.error("🚨 ALERTA: Salida inminente por el TECHO del Reservorio")
 
-# 1. SIDEBAR: Mantén tus Sliders de DIP y Shift, pero agrega el botón 'Proactive'
-if st.sidebar.button("🚀 Ejecutar Inversión Estocástica"):
-    best_s, best_d = proactive_stochastic_inversion(data, md, inc, model)
-    st.session_state.shift = best_s
-    st.session_state.dip = best_d
-
-# 2. TABS PRINCIPALES (Aquí apilas todo lo que pediste)
-tab1, tab2, tab3 = st.tabs(["🌎 Cortina & Ahead 200ft", "📊 Logs & 3D", "📝 Reporte & Ingeniería"])
-
-with tab1:
-    # CORTINA: Agrega la Paleta OWC (Azules) y el Ghost Plot (Línea blanca punteada)
-    # PROYECCIÓN: Dibuja la línea verde punteada para los próximos 200ft de MD
-    st.subheader("Visualización Geológica Proactive (50ft Reach)")
-    
-with tab2:
-    # LOGS: Muestra el Match de Resistividad con los Cuernos de Polarización
-    # IMAGEN AZIMUTAL: Heatmap 360°
-    st.subheader("Análisis de Herramienta WFRD 3D")
-
-with tab3:
-    # INGENIERÍA: Muestra los resultados de get_geo_metrics (TVDss, TST, TVT)
-    # ALERTAS: Si DTBss < 3ft, muestra st.error("¡Salida por el Techo!")
-    st.subheader("Cálculos de Espesor y Reporte de Guardia")
+# Reporte Editable
+obs = st.text_area("Notas de Guardia:", "Ajuste proactivo realizado...")
+if st.button("💾 Exportar Reporte CSV"):
+    report_df = save_geosteering_report({"TVDss": tvdss, "DIP": st.session_state.dip, "Observaciones": obs})
+    st.write(report_df)
