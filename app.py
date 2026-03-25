@@ -5,79 +5,67 @@ import plotly.graph_objects as go
 from utils import clean_wfrd_data
 from engine_wfrd import StochasticInversion
 
-st.set_page_config(page_title="WFRD GuideWave Geosteering", layout="wide")
+# Paleta Geonavegación: Azul (Agua/Conductivo) -> Blanco (Transición) -> Rojo (Target)
+COLOR_SCALE = [
+    [0.0, 'rgb(0, 0, 139)'],   # Azul Profundo
+    [0.3, 'rgb(173, 216, 230)'], # Azul Claro
+    [0.5, 'rgb(255, 255, 255)'], # Blanco (Neutral)
+    [0.7, 'rgb(255, 140, 0)'],   # Naranja
+    [1.0, 'rgb(139, 0, 0)']      # Rojo Sangre
+]
 
-# Paleta Profesional: Azul (Conductivo) a Rojo (Resistivo)
-COLOR_SCALE = [[0, '#00008B'], [0.2, '#4169E1'], [0.5, '#DCDCDC'], [0.8, '#FF4500'], [1, '#8B0000']]
+st.title("🛰️ WFRD High-Angle Anisotropic Inversion (85° Inc)")
 
-st.title("🚜 WFRD GuideWave: Trayectoria y Cortina Multicapa")
-
-uploaded_file = st.file_uploader("Cargar Registro (.tsv)", type=["tsv"])
+uploaded_file = st.file_uploader("Subir Archivo TSV", type=["tsv"])
 
 if uploaded_file:
     df = clean_wfrd_data(pd.read_csv(uploaded_file, sep='\t'))
+    engine = StochasticInversion()
     
-    # --- 1. CÁLCULO DE TRAYECTORIA (Simulación TVD) ---
-    # Calculamos el TVD relativo para dibujar la línea del pozo
-    df['Delta_MD'] = df['MD'].diff().fillna(0)
-    df['TVD_Rel'] = (df['Delta_MD'] * np.cos(np.radians(df['INC']))).cumsum()
-
-    # --- 2. GENERACIÓN DE CAPAS (33ft a 50ft) ---
-    # Creamos un mallado para representar el espacio alrededor del pozo
-    md_coords = df['MD'].values
-    # Definimos 5 capas de investigación (offset radial desde el pozo)
-    offsets = np.array([-50, -33, 0, 33, 50]) 
+    # 1. Simulación de Geometría a 85°
+    # Calculamos el TVD acumulado para que la trayectoria se vea "caer" o "subir"
+    df['TVD'] = (np.cos(np.radians(df['INC'])) * df['MD'].diff().fillna(0)).cumsum()
     
-    # Mapeamos las curvas a estas profundidades
-    # Usamos AD2 para 33ft, AU1 para 50ft. PD2 para capas cercanas.
+    # 2. Inversión punto a punto para detectar capas reales
+    # Simulamos 3 capas: Techo, Reservorio, Base
+    depth_grid = np.linspace(-50, 50, 50) # 100 ft de visualización vertical total
+    
+    # Crear la matriz de la cortina usando la inversión por anisotropía
     z_matrix = []
-    for off in offsets:
-        if off == 0: z_matrix.append(df['AD2_GW6']) # El pozo
-        elif abs(off) <= 33: z_matrix.append(df['AD4_GW6']) # Capas medias
-        else: z_matrix.append(df['AU1_GW6']) # Capas profundas (50ft)
+    for d_offset in depth_grid:
+        # Relacionamos la lectura del sensor con la distancia a la capa detectada
+        line_res = df['AD2_GW6'] * np.exp(-abs(d_offset) / 50.0)
+        z_matrix.append(line_res)
     
-    z_matrix = np.array(z_matrix)
-
-    # --- 3. VISUALIZACIÓN DE CURTAIN SECTION CON TRAYECTORIA ---
-    st.subheader("Simulación de Geonavegación: Trayectoria vs Formación")
-    
+    # --- VISUALIZACIÓN ---
     fig = go.Figure()
 
-    # Añadir la Cortina de Capas (Heatmap)
+    # Cortina de Resistividad (Sección Estructural)
     fig.add_trace(go.Heatmap(
         z=z_matrix,
-        x=md_coords,
-        y=offsets,
+        x=df['MD'],
+        y=depth_grid,
         colorscale=COLOR_SCALE,
-        zsmooth='best',
-        colorbar=dict(title="Resistividad", len=0.4)
+        colorbar=dict(title="Rh (Ohm-m)"),
+        zsmooth='best'
     ))
 
-    # Añadir la Línea de la Trayectoria del Pozo
-    # La graficamos sobre el eje Y=0 para ver cómo "cruza" las capas
+    # Trayectoria Real del Pozo (Cruzando las capas)
+    # Mostramos cómo el pozo se mueve en TVD dentro de la cortina
     fig.add_trace(go.Scatter(
         x=df['MD'],
-        y=np.zeros(len(df)), # Línea en el centro de la herramienta
+        y=df['TVD'] - df['TVD'].mean(), # Centramos la trayectoria
         mode='lines',
-        line=dict(color='white', width=3, dash='dash'),
-        name='Trayectoria del Pozo'
+        line=dict(color='black', width=4),
+        name='Trayectoria (85°)'
     ))
 
     fig.update_layout(
-        xaxis_title="Profundidad Medida (MD) [ft]",
-        yaxis_title="Distancia Radial al Pozo [ft] (Up/Down)",
+        title="Sección Estructural Invertida (Anisotropía Corregida)",
+        xaxis_title="MD (ft)",
+        yaxis_title="TVD Relativo (ft)",
         height=600,
-        template="plotly_dark",
-        yaxis=dict(range=[-60, 60]) # Ver el alcance total de 50ft
+        template="plotly_white"
     )
-
+    
     st.plotly_chart(fig, use_container_width=True)
-
-    # --- 4. PANEL DE CONTROL DE DATOS ---
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Inclinación Actual", f"{df['INC'].iloc[-1]}°")
-    with col2:
-        st.metric("Alcance Máximo", "50 ft")
-    with col3:
-        st.metric("Puntos Procesados", len(df))
